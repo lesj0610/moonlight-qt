@@ -81,6 +81,25 @@ struct DualSenseOutputReport{
 #define GAMEPAD_HAPTIC_SIMPLE_HIFREQ_MOTOR_WEIGHT 0.33
 #define GAMEPAD_HAPTIC_SIMPLE_LOWFREQ_MOTOR_WEIGHT 0.8
 
+// A held key is identified by both its wire key code and the flags that were sent
+// with it, because the host distinguishes held keys by that pair. These pack the two
+// into one hashable value for the key-down set.
+static inline quint32 packKeyDown(short wireKeyCode, char flags)
+{
+    return (static_cast<quint32>(static_cast<quint16>(wireKeyCode)) << 8) |
+           static_cast<quint8>(flags);
+}
+
+static inline short unpackKeyCode(quint32 packed)
+{
+    return static_cast<short>(static_cast<quint16>(packed >> 8));
+}
+
+static inline char unpackKeyFlags(quint32 packed)
+{
+    return static_cast<char>(packed & 0xFF);
+}
+
 class SdlInputHandler
 {
 public:
@@ -218,7 +237,11 @@ private:
 
     int m_GamepadMask;
     GamepadState m_GamepadState[MAX_GAMEPADS];
-    QSet<short> m_KeysDown;
+    // Key-down state must carry the full wire identity of the event, not just the
+    // key code. The host tracks held keys by (key code, flags), so a release that
+    // dropped the flags would be a different key there and leave this one stuck.
+    // Packed as (wire key code << 8) | flags.
+    QSet<quint32> m_KeysDown;
     bool m_FakeMouseCaptureActive;
     bool m_KeyboardCaptureActive;
     QString m_OldIgnoreDevices;

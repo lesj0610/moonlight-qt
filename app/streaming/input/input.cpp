@@ -281,7 +281,8 @@ void SdlInputHandler::raiseAllKeys()
                 (int)m_KeysDown.count());
 
     for (auto keyDown : std::as_const(m_KeysDown)) {
-        LiSendKeyboardEvent(keyDown, KEY_ACTION_UP, 0);
+        // Release with the identity the key was pressed with, flags included.
+        LiSendKeyboardEvent2(unpackKeyCode(keyDown), KEY_ACTION_UP, 0, unpackKeyFlags(keyDown));
     }
 
     m_KeysDown.clear();

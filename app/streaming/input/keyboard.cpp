@@ -178,6 +178,7 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
     short keyCode;
     char modifiers;
     bool shouldNotConvertToScanCodeOnServer = false;
+    char langFlags = 0;
 
     if (event->repeat) {
         // Ignore repeat key down events
@@ -451,10 +452,28 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
                 keyCode = 0xE2;
                 break;
             case SDL_SCANCODE_LANG1:
+#ifdef _WIN32
+                // Hangul/English toggle. VK_HANGUL shares key code 0x15 with VK_KANA,
+                // so the host cannot tell them apart from the key code alone. The LANG1
+                // flag carries the USB HID usage the client observed (0x90).
+                shouldNotConvertToScanCodeOnServer = true;
+                langFlags = SS_KBE_FLAG_LANG1;
+                keyCode = 0x15;
+#else
+                // Other platforms also report LANG1 for JIS keys, so keep the existing
+                // behavior there until each one is proven.
                 keyCode = 0x1C;
+#endif
                 break;
             case SDL_SCANCODE_LANG2:
+#ifdef _WIN32
+                // Hanja conversion. VK_HANJA shares key code 0x19 with VK_KANJI.
+                shouldNotConvertToScanCodeOnServer = true;
+                langFlags = SS_KBE_FLAG_LANG2;
+                keyCode = 0x19;
+#else
                 keyCode = 0x1D;
+#endif
                 break;
             default:
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -464,17 +483,23 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
         }
     }
 
-    // Track the key state so we always know which keys are down
+    char flags = shouldNotConvertToScanCodeOnServer ? SS_KBE_FLAG_NON_NORMALIZED : 0;
+    flags |= langFlags;
+
+    short wireKeyCode = 0x8000 | keyCode;
+
+    // Track the key state so we always know which keys are down. The flags are part
+    // of the identity, so a forced release later reproduces the exact same event.
     if (event->state == SDL_PRESSED) {
-        m_KeysDown.insert(keyCode);
+        m_KeysDown.insert(packKeyDown(wireKeyCode, flags));
     }
     else {
-        m_KeysDown.remove(keyCode);
+        m_KeysDown.remove(packKeyDown(wireKeyCode, flags));
     }
 
-    LiSendKeyboardEvent2(0x8000 | keyCode,
+    LiSendKeyboardEvent2(wireKeyCode,
                         event->state == SDL_PRESSED ?
                             KEY_ACTION_DOWN : KEY_ACTION_UP,
                         modifiers,
-                        shouldNotConvertToScanCodeOnServer ? SS_KBE_FLAG_NON_NORMALIZED : 0);
+                        flags);
 }
