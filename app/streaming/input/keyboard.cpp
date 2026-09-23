@@ -3,6 +3,10 @@
 #include <Limelight.h>
 #include "SDL_compat.h"
 
+#ifdef Q_OS_WIN32
+#include <windows.h>
+#endif
+
 #define VK_0 0x30
 #define VK_A 0x41
 
@@ -11,6 +15,57 @@
 #define VK_F1 0x70
 #define VK_F13 0x7C
 #define VK_NUMPAD0 0x60
+#endif
+
+#ifdef Q_OS_WIN32
+// Some keyboards report Right Shift with the extended flag, as E0 36. Windows
+// takes that for VK_RSHIFT like any other Right Shift, but SDL3 reads E0 36 as
+// the fake shift keyboards send around the navigation keys and drops it, so the
+// key never reaches the host. Windows has already discarded real fake shifts by
+// the time it posts a key message, so clearing the flag only hands SDL the scan
+// code Windows itself resolved the key to.
+static LRESULT CALLBACK rightShiftFixProc(int code, WPARAM wParam, LPARAM lParam)
+{
+    if (code == HC_ACTION) {
+        MSG* msg = reinterpret_cast<MSG*>(lParam);
+        switch (msg->message) {
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+            if ((msg->wParam == VK_SHIFT || msg->wParam == VK_RSHIFT) &&
+                    LOBYTE(HIWORD(msg->lParam)) == 0x36 &&
+                    (HIWORD(msg->lParam) & KF_EXTENDED)) {
+                msg->lParam &= ~(static_cast<LPARAM>(KF_EXTENDED) << 16);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+void* SdlInputHandler::installRightShiftFix()
+{
+    // A message hook on this thread sees every message taken from its queue,
+    // whether SDL's event pump or Qt's event loop takes it.
+    HHOOK hook = SetWindowsHookEx(WH_GETMESSAGE, rightShiftFixProc, nullptr, GetCurrentThreadId());
+    if (hook == nullptr) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Unable to install the Right Shift message hook: %lu",
+                    GetLastError());
+    }
+    return hook;
+}
+
+void SdlInputHandler::removeRightShiftFix(void* hook)
+{
+    if (hook != nullptr) {
+        UnhookWindowsHookEx(static_cast<HHOOK>(hook));
+    }
+}
 #endif
 
 void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)

@@ -273,5 +273,12 @@ private:
     char m_DragButton;
     int m_NumFingersDown;
 
+#ifdef Q_OS_WIN32
+    // Rewrites Right Shift key messages before SDL reads them (see keyboard.cpp).
+    static void* installRightShiftFix();
+    static void removeRightShiftFix(void* hook);
+    void* m_RightShiftFixHook;
+#endif
+
     static const int k_ButtonMap[];
 };

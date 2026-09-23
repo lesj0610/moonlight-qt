@@ -214,10 +214,18 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
     SDL_zero(m_LastTouchDownEvent);
     SDL_zero(m_LastTouchUpEvent);
     SDL_zero(m_TouchDownEvent);
+
+#ifdef Q_OS_WIN32
+    m_RightShiftFixHook = installRightShiftFix();
+#endif
 }
 
 SdlInputHandler::~SdlInputHandler()
 {
+#ifdef Q_OS_WIN32
+    removeRightShiftFix(m_RightShiftFixHook);
+#endif
+
     for (int i = 0; i < MAX_GAMEPADS; i++) {
         if (m_GamepadState[i].mouseEmulationTimer != 0) {
             Session::get()->notifyMouseEmulationMode(false);
