@@ -28,6 +28,8 @@
 #define SDL_CODE_GAMECONTROLLER_SET_MOTION_EVENT_STATE 103
 #define SDL_CODE_GAMECONTROLLER_SET_CONTROLLER_LED 104
 #define SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS 105
+#define SDL_CODE_STREAM_RESIZE_RESULT 106
+#define SDL_CODE_STREAM_RESIZE_TICK 107
 
 #include <openssl/rand.h>
 
@@ -60,8 +62,41 @@ CONNECTION_LISTENER_CALLBACKS Session::k_ConnCallbacks = {
     Session::clRumbleTriggers,
     Session::clSetMotionEventState,
     Session::clSetControllerLED,
-    Session::clSetAdaptiveTriggers
+    Session::clSetAdaptiveTriggers,
+    Session::clStreamResizeResult
 };
+
+namespace {
+
+// An answer to a stream resize request, on its way to the main thread
+struct StreamResizeResult
+{
+    uint32_t requestId;
+    uint16_t width;
+    uint16_t height;
+    uint16_t fps;
+    uint8_t status;
+};
+
+Uint32 SDLCALL streamResizeTimerCallback(Uint32, void*)
+{
+    SDL_Event event = {};
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_STREAM_RESIZE_TICK;
+    SDL_PushEvent(&event);
+    return 0;
+}
+
+uint64_t streamResizeNow()
+{
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    return SDL_GetTicks64();
+#else
+    return SDL_GetTicks();
+#endif
+}
+
+}
 
 Session* Session::s_ActiveSession;
 QSemaphore Session::s_ActiveSessionSemaphore(1);
@@ -251,6 +286,29 @@ void Session::clSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g
     SDL_PushEvent(&setControllerLEDEvent);
 }
 
+void Session::clStreamResizeResult(uint32_t requestId, uint16_t width, uint16_t height, uint16_t fps, uint8_t status)
+{
+    // This runs on the control stream thread. Frames of the new size can be
+    // right behind an OK answer, so they are held back from here until the
+    // main thread has rebuilt the decoder, or has found the answer stale.
+    if (status == LI_STREAM_RESIZE_OK) {
+        SDL_AtomicSet(&s_ActiveSession->m_DecoderInputBlocked, 1);
+    }
+
+    StreamResizeResult* result = (StreamResizeResult*)SDL_malloc(sizeof(StreamResizeResult));
+    if (result == nullptr) {
+        SDL_AtomicSet(&s_ActiveSession->m_DecoderInputBlocked, 0);
+        return;
+    }
+    *result = {requestId, width, height, fps, status};
+
+    SDL_Event event = {};
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_STREAM_RESIZE_RESULT;
+    event.user.data1 = result;
+    SDL_PushEvent(&event);
+}
+
 void Session::clSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlags, uint8_t typeLeft, uint8_t typeRight, uint8_t *left, uint8_t *right){
     // We push an event for the main thread to handle in order to properly synchronize
     // with the removal of game controllers that could result in our game controller
@@ -340,6 +398,73 @@ bool Session::chooseDecoder(StreamingPreferences::VideoDecoderSelection vds,
     return false;
 }
 
+int Session::sendRequest(int width, int height, int fps, uint32_t* requestId)
+{
+    return LiRequestStreamResize(width, height, fps, requestId);
+}
+
+void Session::setDecoderInputBlocked(bool blocked)
+{
+    SDL_AtomicSet(&m_DecoderInputBlocked, blocked ? 1 : 0);
+}
+
+void Session::applyStreamSize(int width, int height, int fps)
+{
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Video stream is now %dx%dx%d", width, height, fps);
+
+    // The decoder is rebuilt from the active video size, not from m_StreamConfig
+    m_ActiveVideoWidth = width;
+    m_ActiveVideoHeight = height;
+    m_ActiveVideoFrameRate = fps;
+    m_StreamConfig.width = width;
+    m_StreamConfig.height = height;
+    m_StreamConfig.fps = fps;
+
+    m_InputHandler->setStreamSize(width, height);
+}
+
+void Session::recreateDecoder()
+{
+    SDL_Event event = {};
+    event.type = SDL_RENDER_DEVICE_RESET;
+    SDL_PushEvent(&event);
+}
+
+void Session::requestIdrFrame()
+{
+    LiRequestIdrFrame();
+}
+
+void Session::scheduleTick(uint32_t delayMs)
+{
+    // One tick at a time. The controller always asks for the one it needs next.
+    if (m_ResizeTimer != 0) {
+        SDL_RemoveTimer(m_ResizeTimer);
+    }
+    m_ResizeTimer = SDL_AddTimer(delayMs > 0 ? delayMs : 1, streamResizeTimerCallback, nullptr);
+}
+
+void Session::reportDrawableSize()
+{
+    if (m_ResizeController == nullptr || m_Window == nullptr) {
+        return;
+    }
+
+    // A minimized window's size means nothing
+    if (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_MINIMIZED) {
+        return;
+    }
+
+    // The stream is asked for in the pixels the renderer draws, not in window units
+    int width, height;
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+    SDL_GetWindowSizeInPixels(m_Window, &width, &height);
+#else
+    SDL_GetWindowSize(m_Window, &width, &height);
+#endif
+    m_ResizeController->onDrawableSize(width, height, streamResizeNow());
+}
+
 int Session::drSetup(int videoFormat, int width, int height, int frameRate, void *, int)
 {
     s_ActiveSession->m_ActiveVideoFormat = videoFormat;
@@ -359,6 +484,12 @@ int Session::drSetup(int videoFormat, int width, int height, int frameRate, void
 
 int Session::drSubmitDecodeUnit(PDECODE_UNIT du)
 {
+    // Refused while the stream changes size, so everything up to the next
+    // keyframe is dropped rather than fed to a decoder of the old size
+    if (SDL_AtomicGet(&s_ActiveSession->m_DecoderInputBlocked)) {
+        return DR_NEED_IDR;
+    }
+
     // Use a lock since we'll be yanking this decoder out
     // from underneath the session when we initiate destruction.
     // We need to destroy the decoder on the main thread to satisfy
@@ -581,11 +712,14 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_ShouldExit(false),
       m_AsyncConnectionSuccess(false),
       m_PortTestResults(0),
+      m_ResizeController(nullptr),
+      m_ResizeTimer(0),
       m_OpusDecoder(nullptr),
       m_AudioRenderer(nullptr),
       m_AudioSampleCount(0),
       m_DropAudioEndTime(0)
 {
+    SDL_AtomicSet(&m_DecoderInputBlocked, 0);
 }
 
 Session::~Session()
@@ -1946,6 +2080,14 @@ void Session::exec()
 
     int currentDisplayIndex = SDL_GetWindowDisplayIndex(m_Window);
 
+    // Keep the stream the size of the window, if the host can switch sizes mid-stream
+    m_ResizeController = new StreamResizeController(*this, m_ActiveVideoWidth, m_ActiveVideoHeight, m_ActiveVideoFrameRate,
+                                                    (LiGetHostFeatureFlags() & LI_FF_STREAM_RESIZE) != 0);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Following the window size: %s",
+                m_ResizeController->isEnabled() ? "yes" : "no (not supported by the host)");
+    reportDrawableSize();
+
     // Now that we're about to stream, any SDL_QUIT event is expected
     // unless it comes from the connection termination callback where
     // (m_UnexpectedTermination is set back to true).
@@ -2036,6 +2178,23 @@ void Session::exec()
                 m_InputHandler->setAdaptiveTriggers((uint16_t)(uintptr_t)event.user.data1,
                                                     (DualSenseOutputReport *)event.user.data2);
                 break;
+            case SDL_CODE_STREAM_RESIZE_RESULT: {
+                StreamResizeResult* result = (StreamResizeResult*)event.user.data1;
+                if (m_ResizeController != nullptr) {
+                    m_ResizeController->onResult(result->requestId, result->width, result->height,
+                                                 result->fps, result->status, streamResizeNow());
+                }
+                else {
+                    SDL_AtomicSet(&m_DecoderInputBlocked, 0);
+                }
+                SDL_free(result);
+                break;
+            }
+            case SDL_CODE_STREAM_RESIZE_TICK:
+                if (m_ResizeController != nullptr) {
+                    m_ResizeController->onTick(streamResizeNow());
+                }
+                break;
             default:
                 SDL_assert(false);
             }
@@ -2055,6 +2214,11 @@ void Session::exec()
                     m_AudioMuted = false;
                 }
                 m_InputHandler->notifyFocusGained();
+                break;
+            case SDL_WINDOWEVENT_SIZE_CHANGED:
+                // Before any flush below can drop it: the size is wanted even
+                // when the renderer is not being recreated for it.
+                reportDrawableSize();
                 break;
             case SDL_WINDOWEVENT_LEAVE:
                 m_InputHandler->notifyMouseLeave();
@@ -2243,6 +2407,14 @@ void Session::exec()
             m_InputHandler->updatePointerRegionLock();
 
             SDL_UnlockMutex(m_DecoderLock);
+
+            // A resize waiting on this rebuild lets frames through again. Only
+            // after the unlock: a frame arriving before it would be dropped as
+            // if accepted, and the next frames would reach the decoder
+            // without the keyframe they depend on.
+            if (m_ResizeController != nullptr) {
+                m_ResizeController->onDecoderRecreated(streamResizeNow());
+            }
             break;
 
         case SDL_KEYUP:
@@ -2322,6 +2494,15 @@ DispatchDeferredCleanup:
 
     // Raise any keys that are still down
     m_InputHandler->raiseAllKeys();
+
+    // Nothing more is resized. Answers that still arrive are ignored.
+    if (m_ResizeTimer != 0) {
+        SDL_RemoveTimer(m_ResizeTimer);
+        m_ResizeTimer = 0;
+    }
+    delete m_ResizeController;
+    m_ResizeController = nullptr;
+    SDL_AtomicSet(&m_DecoderInputBlocked, 0);
 
     // Destroy the input handler now. This must be destroyed
     // before allowwing the UI to continue execution or it could

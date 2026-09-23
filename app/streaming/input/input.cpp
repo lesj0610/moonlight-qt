@@ -278,6 +278,15 @@ void SdlInputHandler::setWindow(SDL_Window *window)
     m_Window = window;
 }
 
+void SdlInputHandler::setStreamSize(int width, int height)
+{
+    // Absolute pointer and touch positions are mapped onto the stream, so
+    // they follow its size. The locked pointer region depends on it too.
+    m_StreamWidth = width;
+    m_StreamHeight = height;
+    updatePointerRegionLock();
+}
+
 void SdlInputHandler::raiseAllKeys()
 {
     if (m_KeysDown.isEmpty()) {

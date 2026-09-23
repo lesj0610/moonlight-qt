@@ -10,6 +10,7 @@
 #include "video/decoder.h"
 #include "audio/renderers/renderer.h"
 #include "video/overlaymanager.h"
+#include "streamresize.h"
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -89,7 +90,7 @@ public:
     }
 };
 
-class Session : public QObject
+class Session : public QObject, private StreamResizeController::Host
 {
     Q_OBJECT
 
@@ -171,6 +172,16 @@ private:
 
     void updateOptimalWindowDisplayMode();
 
+    void reportDrawableSize();
+
+    // StreamResizeController::Host
+    int sendRequest(int width, int height, int fps, uint32_t* requestId) override;
+    void setDecoderInputBlocked(bool blocked) override;
+    void applyStreamSize(int width, int height, int fps) override;
+    void recreateDecoder() override;
+    void requestIdrFrame() override;
+    void scheduleTick(uint32_t delayMs) override;
+
     enum class DecoderAvailability {
         None,
         Software,
@@ -224,6 +235,9 @@ private:
     void clSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlags, uint8_t typeLeft, uint8_t typeRight, uint8_t *left, uint8_t *right);
 
     static
+    void clStreamResizeResult(uint32_t requestId, uint16_t width, uint16_t height, uint16_t fps, uint8_t status);
+
+    static
     int arInit(int audioConfiguration,
                const POPUS_MULTISTREAM_CONFIGURATION opusConfig,
                void* arContext, int arFlags);
@@ -272,6 +286,14 @@ private:
     int m_ActiveVideoWidth;
     int m_ActiveVideoHeight;
     int m_ActiveVideoFrameRate;
+
+    // Follows the window with the stream size, when the host can
+    StreamResizeController* m_ResizeController;
+    SDL_TimerID m_ResizeTimer;
+
+    // Set while the stream changes size. Decode units are refused until the
+    // decoder for the new size exists.
+    SDL_atomic_t m_DecoderInputBlocked;
 
     OpusMSDecoder* m_OpusDecoder;
     IAudioRenderer* m_AudioRenderer;

@@ -171,6 +171,9 @@ public:
 
     void updatePointerRegionLock();
 
+    // The stream changed size without reconnecting
+    void setStreamSize(int width, int height);
+
     static
     QString getUnmappedGamepads();
 
