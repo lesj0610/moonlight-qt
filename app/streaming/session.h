@@ -3,6 +3,8 @@
 #include <QSemaphore>
 #include <QQuickWindow>
 
+#include <deque>
+
 #include <Limelight.h>
 #include <opus_multistream.h>
 #include "settings/streamingpreferences.h"
@@ -174,13 +176,18 @@ private:
 
     void reportDrawableSize();
 
+    void processStreamResize();
+
     // StreamResizeController::Host
     int sendRequest(int width, int height, int fps, uint32_t* requestId) override;
-    void setDecoderInputBlocked(bool blocked) override;
+    void blockVideo() override;
+    void resumeVideoAtKeyframe() override;
+    void requestIdrFrame() override;
     void applyStreamSize(int width, int height, int fps) override;
     void recreateDecoder() override;
-    void requestIdrFrame() override;
     void scheduleTick(uint32_t delayMs) override;
+    void stopFollowing(const char* reason) override;
+    void endSession(const char* reason) override;
 
     enum class DecoderAvailability {
         None,
@@ -287,13 +294,29 @@ private:
     int m_ActiveVideoHeight;
     int m_ActiveVideoFrameRate;
 
-    // Follows the window with the stream size, when the host can
+    // Follows the window with the stream size, when the host can. Made the
+    // first time the stream is shown in a real window.
+    bool m_StreamResizeSupported;
     StreamResizeController* m_ResizeController;
     SDL_TimerID m_ResizeTimer;
 
-    // Set while the stream changes size. Decode units are refused until the
-    // decoder for the new size exists.
-    SDL_atomic_t m_DecoderInputBlocked;
+    // Answers to resize requests, handed from the control stream thread to
+    // the main thread. They are picked up whenever the main loop wakes, so
+    // one whose wake-up event could not be queued is not lost.
+    struct StreamResizeResult
+    {
+        uint32_t requestId;
+        uint16_t width;
+        uint16_t height;
+        uint16_t fps;
+        uint8_t status;
+    };
+    SDL_mutex* m_ResizeResultsLock;
+    std::deque<StreamResizeResult> m_ResizeResults;
+    SDL_atomic_t m_ResizeResultsPending;
+
+    // What reaches the decoder while the stream changes size
+    DecodeGate m_DecodeGate;
 
     OpusMSDecoder* m_OpusDecoder;
     IAudioRenderer* m_AudioRenderer;

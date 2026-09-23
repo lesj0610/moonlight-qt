@@ -4,9 +4,45 @@
 
 #include <algorithm>
 
-StreamResizeController::StreamResizeController(Host& host, int width, int height, int fps, bool enabled)
+DecodeGate::DecodeGate()
+    : m_State(Open)
+{
+}
+
+void DecodeGate::block()
+{
+    m_State.store(Blocked);
+}
+
+void DecodeGate::resumeAtKeyframe()
+{
+    m_State.store(AwaitingKeyframe);
+}
+
+bool DecodeGate::admit(bool isKeyframe)
+{
+    int state = m_State.load();
+    if (state == Open) {
+        return true;
+    }
+
+    if (state == AwaitingKeyframe && isKeyframe) {
+        // A block() racing this wins, and the unit is dropped
+        return m_State.compare_exchange_strong(state, Open) || state == Open;
+    }
+
+    return false;
+}
+
+bool DecodeGate::isOpen() const
+{
+    return m_State.load() == Open;
+}
+
+StreamResizeController::StreamResizeController(Host& host, int width, int height, int fps)
     : m_Host(host),
-      m_Enabled(enabled),
+      m_Enabled(true),
+      m_Windowed(true),
       m_Current({width, height}),
       m_Fps(fps),
       m_HasDesired(false),
@@ -23,9 +59,24 @@ StreamResizeController::StreamResizeController(Host& host, int width, int height
 {
 }
 
+void StreamResizeController::setWindowed(bool windowed, uint64_t)
+{
+    if (windowed == m_Windowed) {
+        return;
+    }
+
+    m_Windowed = windowed;
+    if (!windowed) {
+        // A size the window had before going fullscreen is not wanted any
+        // more. A request already sent still gets its answer applied, since
+        // the host acts on it either way.
+        m_HasDesired = false;
+    }
+}
+
 void StreamResizeController::onDrawableSize(int width, int height, uint64_t nowMs)
 {
-    if (!m_Enabled) {
+    if (!m_Enabled || !m_Windowed) {
         return;
     }
 
@@ -56,8 +107,24 @@ void StreamResizeController::onDrawableSize(int width, int height, uint64_t nowM
 
 void StreamResizeController::onTick(uint64_t nowMs)
 {
-    if (!m_Enabled || !m_HasDesired || m_HasInFlight || m_ResetPending) {
-        // An answer or a finished rebuild picks this up again
+    if (!m_Enabled) {
+        return;
+    }
+
+    if (m_HasInFlight) {
+        if (nowMs - m_LastSentMs >= k_AnswerTimeoutMs) {
+            // Without the answer there is no telling what size the stream is,
+            // and video stays held back, so the session cannot go on.
+            m_HasInFlight = false;
+            m_Enabled = false;
+            m_HasDesired = false;
+            m_Host.endSession("The host did not answer a request to resize the stream.");
+        }
+        return;
+    }
+
+    if (!m_Windowed || !m_HasDesired || m_ResetPending) {
+        // A finished rebuild or a window again picks this up
         return;
     }
 
@@ -77,6 +144,10 @@ void StreamResizeController::onTick(uint64_t nowMs)
         return;
     }
 
+    // Held back from before the request goes out: frames of the new size can
+    // arrive ahead of the answer, and the decoder must never see them.
+    m_Host.blockVideo();
+
     uint32_t requestId = 0;
     int err = m_Host.sendRequest(target.width, target.height, m_Fps, &requestId);
     m_HasSent = true;
@@ -89,26 +160,27 @@ void StreamResizeController::onTick(uint64_t nowMs)
         m_InFlightId = requestId;
         m_InFlightSize = target;
         m_HasDesired = false;
+
+        // Wakes the controller up to notice an answer that never comes
+        m_Host.scheduleTick(k_AnswerTimeoutMs);
+        return;
     }
-    else if (err == LI_ERR_UNSUPPORTED || err == -2) {
-        m_Enabled = false;
-        m_HasDesired = false;
+
+    // The host never saw the request, so the stream is as it was
+    resumeVideo();
+    if (err == LI_ERR_UNSUPPORTED) {
+        stop("the host does not support resizing the stream");
     }
     else {
-        // It did not go out, so try again after the usual interval
-        m_Host.scheduleTick(k_MinIntervalMs);
+        stop("a resize request could not be sent");
     }
 }
 
 void StreamResizeController::onResult(uint32_t requestId, int width, int height, int fps, uint8_t status, uint64_t nowMs)
 {
     if (!m_HasInFlight || requestId != m_InFlightId) {
-        // Not the answer being waited for. Frames were held back when it
-        // arrived, in case it was, and are let through again unless a
-        // rebuild is under way.
-        if (!m_ResetPending) {
-            m_Host.setDecoderInputBlocked(false);
-        }
+        // Not the answer being waited for. moonlight-common-c drops stale and
+        // repeated answers already, and this is the second check.
         return;
     }
 
@@ -122,9 +194,6 @@ void StreamResizeController::onResult(uint32_t requestId, int width, int height,
         break;
     case LI_STREAM_RESIZE_REJECTED_UNSUPPORTED:
     case LI_STREAM_RESIZE_FAILED_SESSION_ENDING:
-        // Nothing more can be asked of this host in this session
-        m_Enabled = false;
-        m_HasDesired = false;
         break;
     default:
         m_HasFailed = true;
@@ -135,17 +204,27 @@ void StreamResizeController::onResult(uint32_t requestId, int width, int height,
     // Whatever was asked for, the answer says what the host streams now
     Size actual = {width, height};
     if (!(actual == m_Current) || fps != m_Fps) {
-        m_Host.setDecoderInputBlocked(true);
         m_Current = actual;
         m_Fps = fps;
         m_Host.applyStreamSize(width, height, fps);
         m_ResetPending = true;
         m_Host.recreateDecoder();
-        return;
+    }
+    else {
+        // The stream kept its size, so the decoder it has is right. It only
+        // needs a keyframe, since frames were dropped while waiting.
+        resumeVideo();
     }
 
-    m_Host.setDecoderInputBlocked(false);
-    scheduleNext(nowMs);
+    if (status == LI_STREAM_RESIZE_REJECTED_UNSUPPORTED) {
+        stop("the host cannot resize the stream in its current configuration");
+    }
+    else if (status == LI_STREAM_RESIZE_FAILED_SESSION_ENDING) {
+        stop("a resize failed and the host is ending the session");
+    }
+    else {
+        scheduleNext(nowMs);
+    }
 }
 
 void StreamResizeController::onDecoderRecreated(uint64_t nowMs)
@@ -154,12 +233,8 @@ void StreamResizeController::onDecoderRecreated(uint64_t nowMs)
         return;
     }
 
-    // The keyframe is asked for before frames are let through, so the first
-    // frame the new decoder takes is a keyframe of its size.
-    m_Host.requestIdrFrame();
-    m_Host.setDecoderInputBlocked(false);
     m_ResetPending = false;
-
+    resumeVideo();
     scheduleNext(nowMs);
 }
 
@@ -168,14 +243,39 @@ bool StreamResizeController::isEnabled() const
     return m_Enabled;
 }
 
+bool StreamResizeController::isWindowed() const
+{
+    return m_Windowed;
+}
+
+bool StreamResizeController::isRequestInFlight() const
+{
+    return m_HasInFlight;
+}
+
 bool StreamResizeController::isResetPending() const
 {
     return m_ResetPending;
 }
 
+void StreamResizeController::resumeVideo()
+{
+    // The gate is ready for the keyframe before the keyframe is asked for,
+    // so it cannot arrive while units are still being dropped.
+    m_Host.resumeVideoAtKeyframe();
+    m_Host.requestIdrFrame();
+}
+
+void StreamResizeController::stop(const char* reason)
+{
+    m_Enabled = false;
+    m_HasDesired = false;
+    m_Host.stopFollowing(reason);
+}
+
 void StreamResizeController::scheduleNext(uint64_t nowMs)
 {
-    if (!m_Enabled || !m_HasDesired || m_HasInFlight || m_ResetPending) {
+    if (!m_Enabled || !m_Windowed || !m_HasDesired || m_HasInFlight || m_ResetPending) {
         return;
     }
 

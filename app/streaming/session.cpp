@@ -68,16 +68,6 @@ CONNECTION_LISTENER_CALLBACKS Session::k_ConnCallbacks = {
 
 namespace {
 
-// An answer to a stream resize request, on its way to the main thread
-struct StreamResizeResult
-{
-    uint32_t requestId;
-    uint16_t width;
-    uint16_t height;
-    uint16_t fps;
-    uint8_t status;
-};
-
 Uint32 SDLCALL streamResizeTimerCallback(Uint32, void*)
 {
     SDL_Event event = {};
@@ -288,25 +278,23 @@ void Session::clSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g
 
 void Session::clStreamResizeResult(uint32_t requestId, uint16_t width, uint16_t height, uint16_t fps, uint8_t status)
 {
-    // This runs on the control stream thread. Frames of the new size can be
-    // right behind an OK answer, so they are held back from here until the
-    // main thread has rebuilt the decoder, or has found the answer stale.
-    if (status == LI_STREAM_RESIZE_OK) {
-        SDL_AtomicSet(&s_ActiveSession->m_DecoderInputBlocked, 1);
-    }
-
-    StreamResizeResult* result = (StreamResizeResult*)SDL_malloc(sizeof(StreamResizeResult));
-    if (result == nullptr) {
-        SDL_AtomicSet(&s_ActiveSession->m_DecoderInputBlocked, 0);
-        return;
-    }
-    *result = {requestId, width, height, fps, status};
+    // This runs on the control stream thread. The answer is handed over under
+    // a lock and picked up whenever the main loop wakes, which it does at
+    // least once a second, so it is not lost if the event below cannot be
+    // queued. The event only wakes the loop sooner.
+    SDL_LockMutex(s_ActiveSession->m_ResizeResultsLock);
+    s_ActiveSession->m_ResizeResults.push_back({requestId, width, height, fps, status});
+    SDL_UnlockMutex(s_ActiveSession->m_ResizeResultsLock);
+    SDL_AtomicSet(&s_ActiveSession->m_ResizeResultsPending, 1);
 
     SDL_Event event = {};
     event.type = SDL_USEREVENT;
     event.user.code = SDL_CODE_STREAM_RESIZE_RESULT;
-    event.user.data1 = result;
-    SDL_PushEvent(&event);
+    if (SDL_PushEvent(&event) <= 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Couldn't wake the main thread for a stream resize answer: %s",
+                    SDL_GetError());
+    }
 }
 
 void Session::clSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlags, uint8_t typeLeft, uint8_t typeRight, uint8_t *left, uint8_t *right){
@@ -403,9 +391,34 @@ int Session::sendRequest(int width, int height, int fps, uint32_t* requestId)
     return LiRequestStreamResize(width, height, fps, requestId);
 }
 
-void Session::setDecoderInputBlocked(bool blocked)
+void Session::blockVideo()
 {
-    SDL_AtomicSet(&m_DecoderInputBlocked, blocked ? 1 : 0);
+    m_DecodeGate.block();
+}
+
+void Session::resumeVideoAtKeyframe()
+{
+    m_DecodeGate.resumeAtKeyframe();
+}
+
+void Session::stopFollowing(const char* reason)
+{
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "No longer following the window size: %s",
+                reason);
+}
+
+void Session::endSession(const char* reason)
+{
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", reason);
+
+    m_UnexpectedTermination = true;
+    emit displayLaunchError(tr("The host did not answer a request to resize the stream, so the stream had to end."));
+
+    SDL_Event event;
+    event.type = SDL_QUIT;
+    event.quit.timestamp = SDL_GetTicks();
+    SDL_PushEvent(&event);
 }
 
 void Session::applyStreamSize(int width, int height, int fps)
@@ -446,12 +459,28 @@ void Session::scheduleTick(uint32_t delayMs)
 
 void Session::reportDrawableSize()
 {
-    if (m_ResizeController == nullptr || m_Window == nullptr) {
+    if (!m_StreamResizeSupported || m_Window == nullptr) {
+        return;
+    }
+
+    // Only a real window is followed. In fullscreen the stream keeps the size
+    // it has, and the controller is only made once there is a window.
+    Uint32 flags = SDL_GetWindowFlags(m_Window);
+    bool windowed = !(flags & SDL_WINDOW_FULLSCREEN);
+    if (m_ResizeController == nullptr) {
+        if (!windowed) {
+            return;
+        }
+        m_ResizeController = new StreamResizeController(*this, m_ActiveVideoWidth, m_ActiveVideoHeight, m_ActiveVideoFrameRate);
+    }
+
+    m_ResizeController->setWindowed(windowed, streamResizeNow());
+    if (!windowed) {
         return;
     }
 
     // A minimized window's size means nothing
-    if (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_MINIMIZED) {
+    if (flags & SDL_WINDOW_MINIMIZED) {
         return;
     }
 
@@ -463,6 +492,30 @@ void Session::reportDrawableSize()
     SDL_GetWindowSize(m_Window, &width, &height);
 #endif
     m_ResizeController->onDrawableSize(width, height, streamResizeNow());
+}
+
+void Session::processStreamResize()
+{
+    if (SDL_AtomicGet(&m_ResizeResultsPending)) {
+        std::deque<StreamResizeResult> results;
+        SDL_LockMutex(m_ResizeResultsLock);
+        results.swap(m_ResizeResults);
+        SDL_AtomicSet(&m_ResizeResultsPending, 0);
+        SDL_UnlockMutex(m_ResizeResultsLock);
+
+        for (const StreamResizeResult& result : results) {
+            if (m_ResizeController != nullptr) {
+                m_ResizeController->onResult(result.requestId, result.width, result.height,
+                                             result.fps, result.status, streamResizeNow());
+            }
+        }
+    }
+
+    // Cheap, and it catches whatever a timer event that could not be queued
+    // would have woken the loop for, like an answer that never came.
+    if (m_ResizeController != nullptr) {
+        m_ResizeController->onTick(streamResizeNow());
+    }
 }
 
 int Session::drSetup(int videoFormat, int width, int height, int frameRate, void *, int)
@@ -484,10 +537,12 @@ int Session::drSetup(int videoFormat, int width, int height, int frameRate, void
 
 int Session::drSubmitDecodeUnit(PDECODE_UNIT du)
 {
-    // Refused while the stream changes size, so everything up to the next
-    // keyframe is dropped rather than fed to a decoder of the old size
-    if (SDL_AtomicGet(&s_ActiveSession->m_DecoderInputBlocked)) {
-        return DR_NEED_IDR;
+    // Dropped while the stream changes size, up to the next keyframe once it
+    // is done. DR_OK rather than DR_NEED_IDR: the keyframe is asked for once
+    // the new decoder can take it, and asking for one for every dropped
+    // keyframe would make the host send nothing else.
+    if (!s_ActiveSession->m_DecodeGate.admit(du->frameType == FRAME_TYPE_IDR)) {
+        return DR_OK;
     }
 
     // Use a lock since we'll be yanking this decoder out
@@ -712,14 +767,16 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_ShouldExit(false),
       m_AsyncConnectionSuccess(false),
       m_PortTestResults(0),
+      m_StreamResizeSupported(false),
       m_ResizeController(nullptr),
       m_ResizeTimer(0),
+      m_ResizeResultsLock(SDL_CreateMutex()),
       m_OpusDecoder(nullptr),
       m_AudioRenderer(nullptr),
       m_AudioSampleCount(0),
       m_DropAudioEndTime(0)
 {
-    SDL_AtomicSet(&m_DecoderInputBlocked, 0);
+    SDL_AtomicSet(&m_ResizeResultsPending, 0);
 }
 
 Session::~Session()
@@ -728,6 +785,7 @@ Session::~Session()
     // Use Session::exec() or DeferredSessionCleanupTask instead.
 
     SDL_DestroyMutex(m_DecoderLock);
+    SDL_DestroyMutex(m_ResizeResultsLock);
 }
 
 bool Session::initialize(QQuickWindow* qtWindow)
@@ -1658,6 +1716,9 @@ void Session::toggleFullscreen()
     // Actually enter/leave fullscreen
     SDL_SetWindowFullscreen(m_Window, fullScreen ? m_FullScreenFlag : 0);
 
+    // The window size is only followed outside fullscreen
+    reportDrawableSize();
+
 #ifdef Q_OS_DARWIN
     // SDL on macOS has a bug that causes the window size to be reset to crazy
     // large dimensions when exiting out of true fullscreen mode. We can work
@@ -2081,11 +2142,10 @@ void Session::exec()
     int currentDisplayIndex = SDL_GetWindowDisplayIndex(m_Window);
 
     // Keep the stream the size of the window, if the host can switch sizes mid-stream
-    m_ResizeController = new StreamResizeController(*this, m_ActiveVideoWidth, m_ActiveVideoHeight, m_ActiveVideoFrameRate,
-                                                    (LiGetHostFeatureFlags() & LI_FF_STREAM_RESIZE) != 0);
+    m_StreamResizeSupported = (LiGetHostFeatureFlags() & LI_FF_STREAM_RESIZE) != 0;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Following the window size: %s",
-                m_ResizeController->isEnabled() ? "yes" : "no (not supported by the host)");
+                m_StreamResizeSupported ? "in windowed mode" : "no (not supported by the host)");
     reportDrawableSize();
 
     // Now that we're about to stream, any SDL_QUIT event is expected
@@ -2118,6 +2178,7 @@ void Session::exec()
         // and other problems.
         if (!SDL_WaitEventTimeout(&event, 1000)) {
             presence.runCallbacks();
+            processStreamResize();
             continue;
         }
 #else
@@ -2134,9 +2195,12 @@ void Session::exec()
             SDL_Delay(10);
 #endif
             presence.runCallbacks();
+            processStreamResize();
             continue;
         }
 #endif
+        processStreamResize();
+
         switch (event.type) {
         case SDL_QUIT:
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -2178,22 +2242,9 @@ void Session::exec()
                 m_InputHandler->setAdaptiveTriggers((uint16_t)(uintptr_t)event.user.data1,
                                                     (DualSenseOutputReport *)event.user.data2);
                 break;
-            case SDL_CODE_STREAM_RESIZE_RESULT: {
-                StreamResizeResult* result = (StreamResizeResult*)event.user.data1;
-                if (m_ResizeController != nullptr) {
-                    m_ResizeController->onResult(result->requestId, result->width, result->height,
-                                                 result->fps, result->status, streamResizeNow());
-                }
-                else {
-                    SDL_AtomicSet(&m_DecoderInputBlocked, 0);
-                }
-                SDL_free(result);
-                break;
-            }
+            case SDL_CODE_STREAM_RESIZE_RESULT:
             case SDL_CODE_STREAM_RESIZE_TICK:
-                if (m_ResizeController != nullptr) {
-                    m_ResizeController->onTick(streamResizeNow());
-                }
+                // Only wake the loop. processStreamResize() did the work.
                 break;
             default:
                 SDL_assert(false);
@@ -2502,7 +2553,6 @@ DispatchDeferredCleanup:
     }
     delete m_ResizeController;
     m_ResizeController = nullptr;
-    SDL_AtomicSet(&m_DecoderInputBlocked, 0);
 
     // Destroy the input handler now. This must be destroyed
     // before allowwing the UI to continue execution or it could
