@@ -174,6 +174,11 @@ private:
 
     void updateOptimalWindowDisplayMode();
 
+    int getTargetDisplayIndex();
+
+    // Starts the stream at the size its window or screen will have
+    void applyAutoResolution();
+
     void reportDrawableSize();
 
     void processStreamResize();
@@ -307,6 +312,10 @@ private:
     // wakes. Only the main thread touches these.
     bool m_ResizeRebuildWanted;
     bool m_ResizeEndWanted;
+
+    // The window's size, in window units, while it is followed
+    int m_AutoWindowWidth;
+    int m_AutoWindowHeight;
 
     // Answers to resize requests, handed from the control stream thread to
     // the main thread. They are picked up whenever the main loop wakes, so

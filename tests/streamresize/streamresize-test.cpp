@@ -612,6 +612,41 @@ static void testAnAnswerThatArrivesInFullscreenIsStillApplied()
     CHECK(host.sends() == 1);
 }
 
+static void testAnAutoStreamStartsAtItsWindowOrScreen()
+{
+    const StreamSize desktop = {2560, 1440};
+    const StreamSize usable = {2560, 1392};
+
+    // Fullscreen takes the screen
+    StreamSize size = chooseAutoStreamSize(true, desktop, usable, {1600, 900});
+    CHECK(size.width == 2560 && size.height == 1440);
+
+    // A window starts at the size it was left at
+    size = chooseAutoStreamSize(false, desktop, usable, {1600, 900});
+    CHECK(size.width == 1600 && size.height == 900);
+
+    // Unless that no longer fits the screen, or there is none yet
+    size = chooseAutoStreamSize(false, desktop, usable, {3000, 1000});
+    CHECK(size.width == 2048 && size.height == 1112);
+    size = chooseAutoStreamSize(false, desktop, usable, {0, 0});
+    CHECK(size.width == 2048 && size.height == 1112);
+
+    // Always even, and within what a stream can be resized to
+    size = chooseAutoStreamSize(false, desktop, usable, {1601, 901});
+    CHECK(size.width == 1600 && size.height == 900);
+    size = chooseAutoStreamSize(false, desktop, usable, {320, 200});
+    CHECK(size.width == LI_STREAM_RESIZE_MIN_WIDTH && size.height == LI_STREAM_RESIZE_MIN_HEIGHT);
+    size = chooseAutoStreamSize(true, {10240, 4320}, usable, {0, 0});
+    CHECK(size.width == LI_STREAM_RESIZE_MAX_WIDTH && size.height == 4320);
+
+    // Fullscreen without a known screen size goes by the window, and with
+    // nothing known there is no size
+    size = chooseAutoStreamSize(true, {0, 0}, usable, {1600, 900});
+    CHECK(size.width == 1600 && size.height == 900);
+    size = chooseAutoStreamSize(false, {0, 0}, {0, 0}, {0, 0});
+    CHECK(size.width == 0 && size.height == 0);
+}
+
 namespace {
 
 // The controller in front of moonlight-common-c's video path, with a decoder
@@ -773,6 +808,7 @@ int main()
     testTheLoopWakingOftenDoesNotReplaceTheTimer();
     testFullscreenIsNotFollowed();
     testAnAnswerThatArrivesInFullscreenIsStillApplied();
+    testAnAutoStreamStartsAtItsWindowOrScreen();
     testALateKeyframeOfTheOldSizeNeverReachesTheNewDecoder();
     testARollbackNeverShowsTheAttemptThatFailed();
 

@@ -4,6 +4,20 @@
 
 #include <cstdint>
 
+// A size in pixels. Zero is unknown.
+struct StreamSize
+{
+    int width;
+    int height;
+};
+
+// Where a stream that takes the size of its window starts, before there is a
+// window. In fullscreen it is the desktop's size. In a window it is the size
+// the window had last time, if that still fits the usable part of the
+// screen, and otherwise most of that part. The result is even and within the
+// limits of LiRequestStreamResize(), or zero if nothing is known.
+StreamSize chooseAutoStreamSize(bool fullScreen, StreamSize desktop, StreamSize usable, StreamSize last);
+
 // Keeps the stream the size of the window it is shown in.
 //
 // When the window's drawable size settles, the host is asked for a stream of

@@ -16,6 +16,10 @@ public:
 
     Q_INVOKABLE void save();
 
+    // Remembers the window a stream that follows the window was last shown
+    // in, and saves only that
+    void saveAutoWindowSize(int width, int height);
+
     void reload();
 
     enum AudioConfig
@@ -121,6 +125,7 @@ public:
 
     Q_PROPERTY(int width MEMBER width NOTIFY displayModeChanged)
     Q_PROPERTY(int height MEMBER height NOTIFY displayModeChanged)
+    Q_PROPERTY(bool autoResolution MEMBER autoResolution NOTIFY displayModeChanged)
     Q_PROPERTY(int fps MEMBER fps NOTIFY displayModeChanged)
     Q_PROPERTY(int bitrateKbps MEMBER bitrateKbps NOTIFY bitrateChanged)
     Q_PROPERTY(bool unlockBitrate MEMBER unlockBitrate NOTIFY unlockBitrateChanged)
@@ -163,6 +168,15 @@ public:
     // Directly accessible members for preferences
     int width;
     int height;
+
+    // The stream takes the size of the window it is shown in, rather than
+    // width x height, when the host can resize it
+    bool autoResolution;
+
+    // The window size, in window units, such a stream was last shown at. Zero
+    // when there is none yet.
+    int autoWindowWidth;
+    int autoWindowHeight;
     int fps;
     int bitrateKbps;
     bool unlockBitrate;

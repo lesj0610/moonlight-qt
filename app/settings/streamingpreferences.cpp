@@ -50,6 +50,9 @@
 #define SER_SWAPFACEBUTTONS "swapfacebuttons"
 #define SER_CAPTURESYSKEYS "capturesyskeys"
 #define SER_KEEPAWAKE "keepawake"
+#define SER_AUTORESOLUTION "autoresolution"
+#define SER_AUTOWINDOWWIDTH "autowindowwidth"
+#define SER_AUTOWINDOWHEIGHT "autowindowheight"
 #define SER_LANGUAGE "language"
 #define SER_RENDERER "renderer"
 
@@ -151,6 +154,9 @@ void StreamingPreferences::reload()
     reverseScrollDirection = settings.value(SER_REVERSESCROLL, false).toBool();
     swapFaceButtons = settings.value(SER_SWAPFACEBUTTONS, false).toBool();
     keepAwake = settings.value(SER_KEEPAWAKE, true).toBool();
+    autoResolution = settings.value(SER_AUTORESOLUTION, false).toBool();
+    autoWindowWidth = settings.value(SER_AUTOWINDOWWIDTH, 0).toInt();
+    autoWindowHeight = settings.value(SER_AUTOWINDOWHEIGHT, 0).toInt();
     enableHdr = settings.value(SER_HDR, false).toBool();
     captureSysKeysMode = static_cast<CaptureSysKeysMode>(settings.value(SER_CAPTURESYSKEYS,
                                                          static_cast<int>(CaptureSysKeysMode::CSK_OFF)).toInt());
@@ -362,6 +368,20 @@ void StreamingPreferences::save()
     settings.setValue(SER_SWAPFACEBUTTONS, swapFaceButtons);
     settings.setValue(SER_CAPTURESYSKEYS, captureSysKeysMode);
     settings.setValue(SER_KEEPAWAKE, keepAwake);
+    settings.setValue(SER_AUTORESOLUTION, autoResolution);
+}
+
+void StreamingPreferences::saveAutoWindowSize(int width, int height)
+{
+    QSettings settings;
+
+    // Only this, since these preferences may carry overrides for one
+    // session that must not be saved. save() leaves these alone, so another
+    // copy of the preferences cannot put back an older size.
+    autoWindowWidth = width;
+    autoWindowHeight = height;
+    settings.setValue(SER_AUTOWINDOWWIDTH, autoWindowWidth);
+    settings.setValue(SER_AUTOWINDOWHEIGHT, autoWindowHeight);
 }
 
 int StreamingPreferences::getDefaultBitrate(int width, int height, int fps, bool yuv444)

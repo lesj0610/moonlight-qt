@@ -1067,6 +1067,10 @@
         <translation>사용자 정의</translation>
     </message>
     <message>
+        <source>Auto (window size)</source>
+        <translation>자동 (창 크기)</translation>
+    </message>
+    <message>
         <location filename="../gui/SettingsView.qml" line="643"/>
         <source>30 FPS</source>
         <translation>30 FPS</translation>

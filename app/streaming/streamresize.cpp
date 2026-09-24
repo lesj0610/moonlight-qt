@@ -2,6 +2,40 @@
 
 #include <algorithm>
 
+namespace {
+
+bool isKnown(StreamSize size)
+{
+    return size.width > 0 && size.height > 0;
+}
+
+StreamSize withinLimits(StreamSize size)
+{
+    return {std::clamp(size.width, LI_STREAM_RESIZE_MIN_WIDTH, LI_STREAM_RESIZE_MAX_WIDTH) & ~1,
+            std::clamp(size.height, LI_STREAM_RESIZE_MIN_HEIGHT, LI_STREAM_RESIZE_MAX_HEIGHT) & ~1};
+}
+
+}
+
+StreamSize chooseAutoStreamSize(bool fullScreen, StreamSize desktop, StreamSize usable, StreamSize last)
+{
+    if (fullScreen && isKnown(desktop)) {
+        return withinLimits(desktop);
+    }
+
+    if (isKnown(last) && (!isKnown(usable) || (last.width <= usable.width && last.height <= usable.height))) {
+        return withinLimits(last);
+    }
+
+    // The same share of the screen a window gets for a stream too big for it
+    StreamSize screen = isKnown(usable) ? usable : desktop;
+    if (isKnown(screen)) {
+        return withinLimits({screen.width * 4 / 5, screen.height * 4 / 5});
+    }
+
+    return {0, 0};
+}
+
 StreamResizeController::StreamResizeController(Host& host, int width, int height, int fps)
     : m_Host(host),
       m_Enabled(true),

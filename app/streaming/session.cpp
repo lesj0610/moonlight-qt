@@ -473,6 +473,39 @@ void Session::scheduleTick(uint32_t delayMs)
     m_ResizeTimer = SDL_AddTimer(delayMs > 0 ? delayMs : 1, streamResizeTimerCallback, nullptr);
 }
 
+void Session::applyAutoResolution()
+{
+    int displayIndex = getTargetDisplayIndex();
+
+    StreamSize desktop = {0, 0};
+    SDL_DisplayMode desktopMode;
+    SDL_Rect safeArea;
+    if (StreamUtils::getNativeDesktopMode(displayIndex, &desktopMode, &safeArea)) {
+        desktop = {desktopMode.w, desktopMode.h};
+    }
+
+    StreamSize usable = {0, 0};
+    SDL_Rect usableBounds;
+    if (SDL_GetDisplayUsableBounds(displayIndex, &usableBounds) == 0) {
+        usable = {usableBounds.w, usableBounds.h};
+    }
+
+    StreamSize size = chooseAutoStreamSize(m_IsFullScreen, desktop, usable,
+                                           {m_Preferences->autoWindowWidth, m_Preferences->autoWindowHeight});
+    if (size.width == 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Couldn't tell how large to start the stream, so it starts at %dx%d",
+                    m_StreamConfig.width, m_StreamConfig.height);
+        return;
+    }
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Starting the stream at %dx%d to fit its %s",
+                size.width, size.height, m_IsFullScreen ? "screen" : "window");
+    m_StreamConfig.width = size.width;
+    m_StreamConfig.height = size.height;
+}
+
 void Session::reportDrawableSize()
 {
     if (!m_StreamResizeSupported || m_Window == nullptr) {
@@ -499,6 +532,9 @@ void Session::reportDrawableSize()
     if (flags & SDL_WINDOW_MINIMIZED) {
         return;
     }
+
+    // The next stream that follows the window starts at this size
+    SDL_GetWindowSize(m_Window, &m_AutoWindowWidth, &m_AutoWindowHeight);
 
     // The stream is asked for in the pixels the renderer draws, not in window units
     int width, height;
@@ -779,6 +815,8 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_ResizeTimer(0),
       m_ResizeRebuildWanted(false),
       m_ResizeEndWanted(false),
+      m_AutoWindowWidth(0),
+      m_AutoWindowHeight(0),
       m_ResizeResultsLock(SDL_CreateMutex()),
       m_OpusDecoder(nullptr),
       m_AudioRenderer(nullptr),
@@ -859,6 +897,9 @@ bool Session::initialize(QQuickWindow* qtWindow)
     LiInitializeStreamConfiguration(&m_StreamConfig);
     m_StreamConfig.width = m_Preferences->width;
     m_StreamConfig.height = m_Preferences->height;
+    if (m_Preferences->autoResolution) {
+        applyAutoResolution();
+    }
 
     int x, y, width, height;
     getWindowDimensions(x, y, width, height);
@@ -1516,8 +1557,7 @@ private:
     Session* m_Session;
 };
 
-void Session::getWindowDimensions(int& x, int& y,
-                                  int& width, int& height)
+int Session::getTargetDisplayIndex()
 {
     int displayIndex = 0;
 
@@ -1563,6 +1603,14 @@ void Session::getWindowDimensions(int& x, int& y,
             }
         }
     }
+
+    return displayIndex;
+}
+
+void Session::getWindowDimensions(int& x, int& y,
+                                  int& width, int& height)
+{
+    int displayIndex = getTargetDisplayIndex();
 
     SDL_Rect usableBounds;
     if (SDL_GetDisplayUsableBounds(displayIndex, &usableBounds) == 0) {
@@ -2150,11 +2198,15 @@ void Session::exec()
 
     int currentDisplayIndex = SDL_GetWindowDisplayIndex(m_Window);
 
-    // Keep the stream the size of the window, if the host can switch sizes mid-stream
-    m_StreamResizeSupported = (LiGetHostFeatureFlags() & LI_FF_STREAM_RESIZE) != 0;
+    // Keep the stream the size of the window, if that resolution was chosen
+    // and the host can switch sizes mid-stream. A chosen resolution is kept.
+    bool hostCanResize = (LiGetHostFeatureFlags() & LI_FF_STREAM_RESIZE) != 0;
+    m_StreamResizeSupported = m_Preferences->autoResolution && hostCanResize;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Following the window size: %s",
-                m_StreamResizeSupported ? "in windowed mode" : "no (not supported by the host)");
+                m_StreamResizeSupported ? "in windowed mode" :
+                !m_Preferences->autoResolution ? "no (a resolution was chosen)" :
+                "no (not supported by the host)");
     reportDrawableSize();
 
     // Now that we're about to stream, any SDL_QUIT event is expected
@@ -2579,6 +2631,11 @@ DispatchDeferredCleanup:
     }
     delete m_ResizeController;
     m_ResizeController = nullptr;
+
+    // The window the stream followed is where the next one starts
+    if (m_AutoWindowWidth > 0 && m_AutoWindowHeight > 0) {
+        m_Preferences->saveAutoWindowSize(m_AutoWindowWidth, m_AutoWindowHeight);
+    }
 
     // Destroy the input handler now. This must be destroyed
     // before allowwing the UI to continue execution or it could
