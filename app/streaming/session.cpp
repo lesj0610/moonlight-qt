@@ -1983,6 +1983,10 @@ bool Session::startConnectionAsync()
                                                                                m_StreamConfig.fps);
     }
 
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Connecting at %dx%d, %d FPS, %d Kbps",
+                m_StreamConfig.width, m_StreamConfig.height, m_StreamConfig.fps, m_StreamConfig.bitrate);
+
     int err = LiStartConnection(&hostInfo, &m_StreamConfig, &k_ConnCallbacks,
                                 &m_VideoCallbacks, &m_AudioCallbacks,
                                 NULL, 0, NULL, 0);
