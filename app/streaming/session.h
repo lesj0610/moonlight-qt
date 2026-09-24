@@ -317,6 +317,10 @@ private:
     int m_AutoWindowWidth;
     int m_AutoWindowHeight;
 
+    // What the default bitrate goes by for a stream that takes the size of
+    // its window, or zero to keep the bitrate as set
+    StreamSize m_AutoBitrateFor;
+
     // Answers to resize requests, handed from the control stream thread to
     // the main thread. They are picked up whenever the main loop wakes, so
     // one whose wake-up event could not be queued is not lost.

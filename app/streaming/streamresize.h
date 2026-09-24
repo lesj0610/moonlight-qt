@@ -3,6 +3,7 @@
 #include <Limelight.h>
 
 #include <cstdint>
+#include <vector>
 
 // A size in pixels. Zero is unknown.
 struct StreamSize
@@ -18,10 +19,32 @@ struct StreamSize
 // limits of LiRequestStreamResize(), or zero if nothing is known.
 StreamSize chooseAutoStreamSize(bool fullScreen, StreamSize desktop, StreamSize usable, StreamSize last);
 
-// Keeps the stream the size of the window it is shown in.
+// One display, in pixels: all of it, and the part windows can use
+struct DisplaySize
+{
+    StreamSize desktop;
+    StreamSize usable;
+};
+
+// How a stream that takes the size of its window starts on the display it
+// will be shown on, which is displays[target] (the first display if target
+// is not one of them). bitrateFor is the size its default bitrate goes by,
+// the whole display, since that is the largest the stream gets. It is zero
+// when the bitrate is kept as it was set.
+struct AutoStreamStart
+{
+    StreamSize size;
+    StreamSize bitrateFor;
+};
+AutoStreamStart chooseAutoStreamStart(const std::vector<DisplaySize>& displays, int target,
+                                      bool fullScreen, bool autoBitrate, StreamSize lastWindow);
+
+// Keeps the stream the size of the window it is shown in, when the
+// resolution chosen is Auto. With any other resolution nothing is asked for.
 //
 // When the window's drawable size settles, the host is asked for a stream of
-// that size, and it switches without reconnecting. Video is held back in
+// that size, and it switches without reconnecting. In fullscreen the stream
+// is asked for once at the size of the screen. Video is held back in
 // moonlight-common-c from the moment a request is sent, since frames of the
 // new size can arrive before the host's answer does. Once the answer is in,
 // the decoder is rebuilt at the size the host streams, if that changed, and
@@ -33,7 +56,11 @@ StreamSize chooseAutoStreamSize(bool fullScreen, StreamSize desktop, StreamSize 
 // not happen, or video that does not come back ends the session, since there
 // is no stream to show without them.
 //
-// Only a real window is followed. In fullscreen the stream keeps its size.
+// Only the size of the current mode counts. Whatever was waiting to be asked
+// for when the window goes fullscreen or back is dropped, so a size the
+// window had before cannot replace the screen's, or the other way round. A
+// request already sent still gets its answer applied, since the host acts on
+// it either way, and the newest size is asked for after it.
 //
 // Everything here runs on the main thread. Session implements Host.
 class StreamResizeController
@@ -96,13 +123,20 @@ public:
     static constexpr uint32_t k_KeyframeTimeoutMs = 10000;
     static constexpr uint32_t k_KeyframeRetryMs = 1000;
 
-    StreamResizeController(Host& host, int width, int height, int fps);
+    // follow is whether the resolution chosen is Auto
+    StreamResizeController(Host& host, int width, int height, int fps, bool follow);
 
     // Whether the window is a real window, as opposed to fullscreen
     void setWindowed(bool windowed, uint64_t nowMs);
 
-    // The window's drawable size in pixels, whenever it may have changed
+    // The window's drawable size in pixels, whenever it may have changed.
+    // Only used in a real window.
     void onDrawableSize(int width, int height, uint64_t nowMs);
+
+    // The size in pixels of the screen a fullscreen window is on, whenever it
+    // may have changed. Only used in fullscreen, where it is asked for without
+    // waiting for it to settle.
+    void onScreenSize(int width, int height, uint64_t nowMs);
 
     void onTick(uint64_t nowMs);
 
@@ -142,6 +176,7 @@ private:
         AwaitingKeyframe,
     };
 
+    void setDesired(int width, int height, bool settle, uint64_t nowMs);
     void enterPhase(Phase phase, uint64_t nowMs);
     void resumeVideo(uint64_t nowMs);
     void stop(const char* reason);
@@ -161,6 +196,7 @@ private:
     bool m_HasDesired;
     Size m_Desired;
     uint64_t m_DesiredSinceMs;
+    bool m_DesiredSettles;
 
     Phase m_Phase;
     uint64_t m_PhaseSinceMs;

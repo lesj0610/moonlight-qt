@@ -383,6 +383,11 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     QStringList resoOptions = parser.optionNames().filter(resolutionRexExp);
     bool displaySet = !resoOptions.isEmpty();
     if (displaySet) {
+        // A resolution given here is the one this stream keeps, even if the
+        // saved one is Auto. These preferences are not saved, so the saved
+        // choice stays as it is.
+        preferences->autoResolution = false;
+
         QString name = resoOptions.last();
         if (name == "720") {
             preferences->width  = 1280;
@@ -413,6 +418,8 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
 
     // Resolve --bitrate option
     if (parser.isSet("bitrate")) {
+        // Kept as given, rather than worked out from the screen for Auto
+        preferences->autoAdjustBitrate = false;
         preferences->bitrateKbps = parser.getIntOption("bitrate");
         if (!inRange(preferences->bitrateKbps, 500, 500000)) {
             fprintf(stderr, "Warning: Bitrate is out of the supported range (500 - 500000 Kbps). Performance may suffer!\n");

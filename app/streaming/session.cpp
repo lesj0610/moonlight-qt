@@ -475,24 +475,31 @@ void Session::scheduleTick(uint32_t delayMs)
 
 void Session::applyAutoResolution()
 {
+    std::vector<DisplaySize> displays;
+    for (int i = 0; i < SDL_GetNumVideoDisplays(); i++) {
+        DisplaySize display = {{0, 0}, {0, 0}};
+
+        SDL_DisplayMode desktopMode;
+        SDL_Rect safeArea;
+        if (StreamUtils::getNativeDesktopMode(i, &desktopMode, &safeArea)) {
+            display.desktop = {desktopMode.w, desktopMode.h};
+        }
+
+        SDL_Rect usableBounds;
+        if (SDL_GetDisplayUsableBounds(i, &usableBounds) == 0) {
+            display.usable = {usableBounds.w, usableBounds.h};
+        }
+
+        displays.push_back(display);
+    }
+
+    // The screen the stream window opens on, which need not be the first
     int displayIndex = getTargetDisplayIndex();
-
-    StreamSize desktop = {0, 0};
-    SDL_DisplayMode desktopMode;
-    SDL_Rect safeArea;
-    if (StreamUtils::getNativeDesktopMode(displayIndex, &desktopMode, &safeArea)) {
-        desktop = {desktopMode.w, desktopMode.h};
-    }
-
-    StreamSize usable = {0, 0};
-    SDL_Rect usableBounds;
-    if (SDL_GetDisplayUsableBounds(displayIndex, &usableBounds) == 0) {
-        usable = {usableBounds.w, usableBounds.h};
-    }
-
-    StreamSize size = chooseAutoStreamSize(m_IsFullScreen, desktop, usable,
-                                           {m_Preferences->autoWindowWidth, m_Preferences->autoWindowHeight});
-    if (size.width == 0) {
+    AutoStreamStart start = chooseAutoStreamStart(displays, displayIndex, m_IsFullScreen,
+                                                  m_Preferences->autoAdjustBitrate,
+                                                  {m_Preferences->autoWindowWidth, m_Preferences->autoWindowHeight});
+    m_AutoBitrateFor = start.bitrateFor;
+    if (start.size.width == 0) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "Couldn't tell how large to start the stream, so it starts at %dx%d",
                     m_StreamConfig.width, m_StreamConfig.height);
@@ -500,10 +507,10 @@ void Session::applyAutoResolution()
     }
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Starting the stream at %dx%d to fit its %s",
-                size.width, size.height, m_IsFullScreen ? "screen" : "window");
-    m_StreamConfig.width = size.width;
-    m_StreamConfig.height = size.height;
+                "Starting the stream at %dx%d to fit its %s on display %d",
+                start.size.width, start.size.height, m_IsFullScreen ? "screen" : "window", displayIndex);
+    m_StreamConfig.width = start.size.width;
+    m_StreamConfig.height = start.size.height;
 }
 
 void Session::reportDrawableSize()
@@ -512,29 +519,37 @@ void Session::reportDrawableSize()
         return;
     }
 
-    // Only a real window is followed. In fullscreen the stream keeps the size
-    // it has, and the controller is only made once there is a window.
+    // With a resolution chosen, the controller never asks for anything
     Uint32 flags = SDL_GetWindowFlags(m_Window);
     bool windowed = !(flags & SDL_WINDOW_FULLSCREEN);
     if (m_ResizeController == nullptr) {
-        if (!windowed) {
-            return;
-        }
-        m_ResizeController = new StreamResizeController(*this, m_ActiveVideoWidth, m_ActiveVideoHeight, m_ActiveVideoFrameRate);
+        m_ResizeController = new StreamResizeController(*this, m_ActiveVideoWidth, m_ActiveVideoHeight,
+                                                        m_ActiveVideoFrameRate, m_Preferences->autoResolution);
     }
 
     m_ResizeController->setWindowed(windowed, streamResizeNow());
-    if (!windowed) {
-        return;
-    }
 
     // A minimized window's size means nothing
     if (flags & SDL_WINDOW_MINIMIZED) {
         return;
     }
 
+    if (!windowed) {
+        // In fullscreen the stream takes the size of the screen the window is
+        // on, in the pixels it runs at now, which exclusive fullscreen may
+        // have changed
+        SDL_DisplayMode screenMode;
+        int displayIndex = SDL_GetWindowDisplayIndex(m_Window);
+        if (displayIndex >= 0 && SDL_GetCurrentDisplayMode(displayIndex, &screenMode) == 0) {
+            m_ResizeController->onScreenSize(screenMode.w, screenMode.h, streamResizeNow());
+        }
+        return;
+    }
+
     // The next stream that follows the window starts at this size
-    SDL_GetWindowSize(m_Window, &m_AutoWindowWidth, &m_AutoWindowHeight);
+    if (m_Preferences->autoResolution) {
+        SDL_GetWindowSize(m_Window, &m_AutoWindowWidth, &m_AutoWindowHeight);
+    }
 
     // The stream is asked for in the pixels the renderer draws, not in window units
     int width, height;
@@ -817,6 +832,7 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_ResizeEndWanted(false),
       m_AutoWindowWidth(0),
       m_AutoWindowHeight(0),
+      m_AutoBitrateFor({0, 0}),
       m_ResizeResultsLock(SDL_CreateMutex()),
       m_OpusDecoder(nullptr),
       m_AudioRenderer(nullptr),
@@ -922,6 +938,19 @@ bool Session::initialize(QQuickWindow* qtWindow)
 
     m_StreamConfig.fps = m_Preferences->fps;
     m_StreamConfig.bitrate = m_Preferences->bitrateKbps;
+
+    // A bitrate that follows the resolution goes by the screen the stream is
+    // shown on when the stream takes the size of its window. One set by hand
+    // stays as it is.
+    if (m_AutoBitrateFor.width > 0) {
+        m_StreamConfig.bitrate = StreamingPreferences::getDefaultBitrate(m_AutoBitrateFor.width,
+                                                                         m_AutoBitrateFor.height,
+                                                                         m_StreamConfig.fps,
+                                                                         m_Preferences->enableYUV444);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Bitrate for a %dx%d screen: %d Kbps",
+                    m_AutoBitrateFor.width, m_AutoBitrateFor.height, m_StreamConfig.bitrate);
+    }
 
 #ifndef STEAM_LINK
     // Opt-in to all encryption features if we detect that the platform
@@ -1943,14 +1972,16 @@ bool Session::startConnectionAsync()
     // had if the host supported YUV444 (though obviously with 4:2:0 subsampling).
     // If the user has adjusted the bitrate from default, we'll assume they really wanted
     // that value and not second guess them.
+    int bitrateWidth = m_AutoBitrateFor.width > 0 ? m_AutoBitrateFor.width : m_StreamConfig.width;
+    int bitrateHeight = m_AutoBitrateFor.width > 0 ? m_AutoBitrateFor.height : m_StreamConfig.height;
     if (m_Preferences->enableYUV444 &&
         !(m_StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_YUV444) &&
-        m_StreamConfig.bitrate == StreamingPreferences::getDefaultBitrate(m_StreamConfig.width,
-                                                                          m_StreamConfig.height,
+        m_StreamConfig.bitrate == StreamingPreferences::getDefaultBitrate(bitrateWidth,
+                                                                          bitrateHeight,
                                                                           m_StreamConfig.fps,
                                                                           true)) {
-        m_StreamConfig.bitrate = StreamingPreferences::getDefaultBitrate(m_StreamConfig.width,
-                                                                         m_StreamConfig.height,
+        m_StreamConfig.bitrate = StreamingPreferences::getDefaultBitrate(bitrateWidth,
+                                                                         bitrateHeight,
                                                                          m_StreamConfig.fps,
                                                                          false);
     }
@@ -2200,13 +2231,12 @@ void Session::exec()
 
     // Keep the stream the size of the window, if that resolution was chosen
     // and the host can switch sizes mid-stream. A chosen resolution is kept.
-    bool hostCanResize = (LiGetHostFeatureFlags() & LI_FF_STREAM_RESIZE) != 0;
-    m_StreamResizeSupported = m_Preferences->autoResolution && hostCanResize;
+    m_StreamResizeSupported = (LiGetHostFeatureFlags() & LI_FF_STREAM_RESIZE) != 0;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Following the window size: %s",
-                m_StreamResizeSupported ? "in windowed mode" :
+                !m_StreamResizeSupported ? "no (not supported by the host)" :
                 !m_Preferences->autoResolution ? "no (a resolution was chosen)" :
-                "no (not supported by the host)");
+                "yes, and the screen size in fullscreen");
     reportDrawableSize();
 
     // Now that we're about to stream, any SDL_QUIT event is expected

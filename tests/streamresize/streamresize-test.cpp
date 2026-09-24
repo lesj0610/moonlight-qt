@@ -143,7 +143,7 @@ struct FakeHost : StreamResizeController::Host
 static void testWaitsForTheWindowToSettle()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1280, 720, 0);
     CHECK(!host.ticks.empty() && host.ticks.back() == StreamResizeController::k_SettleMs);
@@ -159,7 +159,7 @@ static void testWaitsForTheWindowToSettle()
 static void testADragIsAskedForOnceItStops()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     for (int i = 0; i < 10; i++) {
         controller.onDrawableSize(1200 + i * 10, 700 + i * 10, i * 100);
@@ -177,7 +177,7 @@ static void testADragIsAskedForOnceItStops()
 static void testSizesAreMadeValidOrNotAskedFor()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     // Odd sizes are rounded down to even
     controller.onDrawableSize(1281, 721, 0);
@@ -206,7 +206,7 @@ static void testSizesAreMadeValidOrNotAskedFor()
 static void testTheSizeTheStreamHasIsNotAskedFor()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1920, 1080, 0);
     controller.onTick(1000);
@@ -217,7 +217,7 @@ static void testTheSizeTheStreamHasIsNotAskedFor()
 static void testOneResizeAtATimeAndAtMostOneRequestPerInterval()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1280, 720, 0);
     controller.onTick(600);
@@ -243,7 +243,7 @@ static void testOneResizeAtATimeAndAtMostOneRequestPerInterval()
 
     // And never sooner than a second after the last request
     FakeHost quick;
-    StreamResizeController fast(quick, 1920, 1080, 60);
+    StreamResizeController fast(quick, 1920, 1080, 60, true);
     fast.onDrawableSize(1280, 720, 0);
     fast.onTick(600);
     fast.onDrawableSize(1600, 900, 650);
@@ -259,7 +259,7 @@ static void testOneResizeAtATimeAndAtMostOneRequestPerInterval()
 static void testVideoIsHeldFromTheRequestAndResumesWhereTheAnswerSays()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(2560, 1080, 0);
     controller.onTick(600);
@@ -290,7 +290,7 @@ static void testVideoIsHeldFromTheRequestAndResumesWhereTheAnswerSays()
 static void testARollbackResumesAtTheStreamThatWasPutBack()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1280, 720, 0);
     controller.onTick(600);
@@ -311,7 +311,7 @@ static void testWithoutAFirstFrameAnyKeyframeWillDo()
 {
     for (uint8_t status : {(uint8_t)LI_STREAM_RESIZE_FAILED_ROLLED_BACK, (uint8_t)LI_STREAM_RESIZE_REJECTED_INVALID, (uint8_t)LI_STREAM_RESIZE_SUPERSEDED}) {
         FakeHost host;
-        StreamResizeController controller(host, 1920, 1080, 60);
+        StreamResizeController controller(host, 1920, 1080, 60, true);
 
         controller.onDrawableSize(1280, 720, 0);
         controller.onTick(600);
@@ -327,7 +327,7 @@ static void testWithoutAFirstFrameAnyKeyframeWillDo()
 static void testStaleAndRepeatedAnswersChangeNothing()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     // Nothing in flight
     controller.onResult(answer(1, 1280, 720, 60, LI_STREAM_RESIZE_OK), 0);
@@ -355,7 +355,7 @@ static void testStaleAndRepeatedAnswersChangeNothing()
 static void testAFailedSizeIsNotAskedForAgainUntilTheWindowMoves()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1280, 720, 0);
     controller.onTick(600);
@@ -379,7 +379,7 @@ static void testAHostThatCannotResizeIsNotAskedAgain()
 {
     for (uint8_t status : {(uint8_t)LI_STREAM_RESIZE_REJECTED_UNSUPPORTED, (uint8_t)LI_STREAM_RESIZE_FAILED_SESSION_ENDING}) {
         FakeHost host;
-        StreamResizeController controller(host, 1920, 1080, 60);
+        StreamResizeController controller(host, 1920, 1080, 60, true);
 
         controller.onDrawableSize(1280, 720, 0);
         controller.onTick(600);
@@ -402,7 +402,7 @@ static void testAHostThatCannotResizeIsNotAskedAgain()
 static void testAFailureAtAnotherSizeStillRebuilds()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1280, 720, 0);
     controller.onTick(600);
@@ -420,7 +420,7 @@ static void testARequestThatCouldNotBeSentGoesBackToTheOldVideoAndStops()
     for (int err : {-1, (int)LI_ERR_UNSUPPORTED}) {
         FakeHost host;
         host.sendResult = err;
-        StreamResizeController controller(host, 1920, 1080, 60);
+        StreamResizeController controller(host, 1920, 1080, 60, true);
 
         controller.onDrawableSize(1280, 720, 0);
         controller.onTick(600);
@@ -443,7 +443,7 @@ static void testARequestThatCouldNotBeSentGoesBackToTheOldVideoAndStops()
 static void testAnAnswerThatNeverComesEndsTheSession()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     // The host may take this long even for a rollback that runs every step to its limit
     CHECK(StreamResizeController::k_AnswerTimeoutMs > LI_STREAM_RESIZE_ANSWER_WITHIN_MS);
@@ -472,7 +472,7 @@ static void testAnAnswerThatNeverComesEndsTheSession()
 static void testASlowAnswerIsStillTaken()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1280, 720, 0);
     controller.onTick(600);
@@ -489,7 +489,7 @@ static void testASlowAnswerIsStillTaken()
 static void testARebuildThatNeverHappensEndsTheSession()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1280, 720, 0);
     controller.onTick(600);
@@ -510,7 +510,7 @@ static void testARebuildThatNeverHappensEndsTheSession()
 static void testVideoThatDoesNotComeBackIsAskedForAgainThenEndsTheSession()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1280, 720, 0);
     controller.onTick(600);
@@ -530,7 +530,7 @@ static void testVideoThatDoesNotComeBackIsAskedForAgainThenEndsTheSession()
 
     // Video that did come back in time is the end of it
     FakeHost later;
-    StreamResizeController back(later, 1920, 1080, 60);
+    StreamResizeController back(later, 1920, 1080, 60, true);
     back.onDrawableSize(1280, 720, 0);
     back.onTick(600);
     back.onResult(answerFrom(1, 1280, 720, 60, LI_STREAM_RESIZE_OK, 5), 700);
@@ -546,7 +546,7 @@ static void testVideoThatDoesNotComeBackIsAskedForAgainThenEndsTheSession()
 static void testTheLoopWakingOftenDoesNotReplaceTheTimer()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1280, 720, 0);
     controller.onTick(600);
@@ -559,10 +559,30 @@ static void testTheLoopWakingOftenDoesNotReplaceTheTimer()
     CHECK(host.ticks.size() == ticks);
 }
 
-static void testFullscreenIsNotFollowed()
+static void testAChosenResolutionNeverAsksForAnything()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, false);
+    CHECK(!controller.isEnabled());
+
+    // Window sizes, fullscreen and back, and time passing
+    controller.onDrawableSize(1280, 720, 0);
+    controller.onTick(1000);
+    controller.setWindowed(false, 1100);
+    controller.onScreenSize(2560, 1440, 1100);
+    controller.onTick(3000);
+    controller.setWindowed(true, 3100);
+    controller.onDrawableSize(1600, 900, 3100);
+    controller.onTick(10000);
+
+    CHECK(host.sends() == 0);
+    CHECK(host.calls.empty());
+}
+
+static void testFullscreenAsksForTheScreenOnce()
+{
+    FakeHost host;
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     // A size the window had before going fullscreen is dropped
     controller.onDrawableSize(1280, 720, 0);
@@ -570,30 +590,104 @@ static void testFullscreenIsNotFollowed()
     controller.onTick(700);
     CHECK(host.sends() == 0);
 
-    // Fullscreen sizes are not asked for
-    controller.onDrawableSize(2560, 1440, 800);
-    controller.onTick(5000);
-    CHECK(host.sends() == 0);
-    CHECK(host.calls.empty());
-
-    // Back in a window, nothing from before or during fullscreen is asked for
-    controller.setWindowed(true, 5500);
-    controller.onTick(5900);
-    CHECK(host.sends() == 0);
-
-    // Following starts again from the window's size
-    controller.onDrawableSize(1600, 900, 6000);
-    controller.onTick(6599);
-    CHECK(host.sends() == 0);
-    controller.onTick(6600);
+    // The screen needs no settling
+    controller.onScreenSize(2560, 1440, 700);
+    controller.onTick(700);
     CHECK(host.sends() == 1);
-    CHECK(host.requests[0].width == 1600 && host.requests[0].height == 900);
+    CHECK(host.requests[0].width == 2560 && host.requests[0].height == 1440);
+
+    // The same screen again, and window sizes seen on the way into
+    // fullscreen, ask for nothing more
+    controller.onScreenSize(2560, 1440, 200);
+    controller.onDrawableSize(1280, 720, 200);
+    controller.onResult(answerFrom(1, 2560, 1440, 60, LI_STREAM_RESIZE_OK, 40), 300);
+    controller.onDecoderRecreated(400);
+    host.flowing = true;
+    controller.onTick(5000);
+    CHECK(host.sends() == 1);
+
+    // A screen of another size, like one the window moved to, is asked for
+    controller.onScreenSize(3840, 2160, 6000);
+    controller.onTick(6000);
+    CHECK(host.sends() == 2);
+    CHECK(host.requests[1].width == 3840 && host.requests[1].height == 2160);
+}
+
+static void testBackInAWindowTheWindowIsFollowedAgain()
+{
+    FakeHost host;
+    StreamResizeController controller(host, 1920, 1080, 60, true);
+
+    controller.setWindowed(false, 0);
+    controller.onScreenSize(2560, 1440, 0);
+    controller.onTick(0);
+    controller.onResult(answerFrom(1, 2560, 1440, 60, LI_STREAM_RESIZE_OK, 40), 100);
+    controller.onDecoderRecreated(200);
+    host.flowing = true;
+    controller.onTick(300);
+
+    // The screen's size, reported late, is not asked for as the window's
+    controller.setWindowed(true, 2000);
+    controller.onDrawableSize(1600, 900, 2000);
+    controller.onScreenSize(2560, 1440, 2000);
+    controller.onTick(2000 + StreamResizeController::k_SettleMs - 1);
+    CHECK(host.sends() == 1);
+    controller.onTick(2000 + StreamResizeController::k_SettleMs);
+    CHECK(host.sends() == 2);
+    CHECK(host.requests[1].width == 1600 && host.requests[1].height == 900);
+}
+
+static void testAFullscreenRoundTripWithARequestInFlight()
+{
+    FakeHost host;
+    StreamResizeController controller(host, 1920, 1080, 60, true);
+
+    // A window size goes out
+    controller.onDrawableSize(1280, 720, 0);
+    controller.onTick(600);
+    CHECK(host.sends() == 1);
+
+    // The window goes fullscreen before the answer. On the way the window
+    // reports a size of its own, which must not win over the screen's.
+    controller.setWindowed(false, 700);
+    controller.onScreenSize(2560, 1440, 700);
+    controller.onDrawableSize(1440, 810, 750);
+    controller.onTick(800);
+    CHECK(host.sends() == 1);
+
+    // The answer is still applied, and then the screen is asked for
+    controller.onResult(answerFrom(1, 1280, 720, 60, LI_STREAM_RESIZE_OK, 10), 900);
+    CHECK(controller.isResetPending());
+    controller.onDecoderRecreated(1000);
+    host.flowing = true;
+    controller.onTick(1600);
+    CHECK(host.sends() == 2);
+    CHECK(host.requests[1].width == 2560 && host.requests[1].height == 1440);
+
+    // Back in a window before that answer: the window's size goes out after it
+    controller.setWindowed(true, 1700);
+    controller.onDrawableSize(1600, 900, 1700);
+    controller.onTick(2400);
+    CHECK(host.sends() == 2);
+    controller.onResult(answerFrom(2, 2560, 1440, 60, LI_STREAM_RESIZE_OK, 20), 2500);
+    controller.onDecoderRecreated(2600);
+    host.flowing = true;
+    controller.onTick(2700);
+    CHECK(host.sends() == 3);
+    CHECK(host.requests[2].width == 1600 && host.requests[2].height == 900);
+
+    // Nothing from the fullscreen detour is asked for again
+    controller.onResult(answerFrom(3, 1600, 900, 60, LI_STREAM_RESIZE_OK, 30), 2800);
+    controller.onDecoderRecreated(2900);
+    host.flowing = true;
+    controller.onTick(10000);
+    CHECK(host.sends() == 3);
 }
 
 static void testAnAnswerThatArrivesInFullscreenIsStillApplied()
 {
     FakeHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
 
     controller.onDrawableSize(1280, 720, 0);
     controller.onTick(600);
@@ -604,11 +698,6 @@ static void testAnAnswerThatArrivesInFullscreenIsStillApplied()
     CHECK(controller.isResetPending());
     controller.onDecoderRecreated(800);
     CHECK(host.calls.back() == "idr");
-
-    // Nothing more is asked for while fullscreen
-    host.flowing = true;
-    controller.onDrawableSize(2560, 1440, 900);
-    controller.onTick(10000);
     CHECK(host.sends() == 1);
 }
 
@@ -645,6 +734,45 @@ static void testAnAutoStreamStartsAtItsWindowOrScreen()
     CHECK(size.width == 1600 && size.height == 900);
     size = chooseAutoStreamSize(false, {0, 0}, {0, 0}, {0, 0});
     CHECK(size.width == 0 && size.height == 0);
+}
+
+static void testAnAutoStreamGoesByTheScreenItIsShownOn()
+{
+    // A 1080p screen first, and a 4K one the stream is shown on
+    const std::vector<DisplaySize> displays = {
+        {{1920, 1080}, {1920, 1040}},
+        {{3840, 2160}, {3840, 2100}},
+    };
+
+    AutoStreamStart start = chooseAutoStreamStart(displays, 1, true, true, {0, 0});
+    CHECK(start.size.width == 3840 && start.size.height == 2160);
+    CHECK(start.bitrateFor.width == 3840 && start.bitrateFor.height == 2160);
+
+    // In a window it starts smaller, but the bitrate still goes by the screen
+    start = chooseAutoStreamStart(displays, 1, false, true, {0, 0});
+    CHECK(start.size.width == 3072 && start.size.height == 1680);
+    CHECK(start.bitrateFor.width == 3840 && start.bitrateFor.height == 2160);
+
+    // On the first screen, the first screen counts
+    start = chooseAutoStreamStart(displays, 0, true, true, {0, 0});
+    CHECK(start.size.width == 1920 && start.size.height == 1080);
+    CHECK(start.bitrateFor.width == 1920 && start.bitrateFor.height == 1080);
+
+    // A window from last time that fits the screen it opens on is kept
+    start = chooseAutoStreamStart(displays, 1, false, true, {2560, 1440});
+    CHECK(start.size.width == 2560 && start.size.height == 1440);
+    start = chooseAutoStreamStart(displays, 0, false, true, {2560, 1440});
+    CHECK(start.size.width == 1536 && start.size.height == 832);
+
+    // A bitrate set by hand is kept
+    start = chooseAutoStreamStart(displays, 1, true, false, {0, 0});
+    CHECK(start.bitrateFor.width == 0 && start.bitrateFor.height == 0);
+
+    // A screen that is not there is taken to be the first
+    start = chooseAutoStreamStart(displays, 5, true, true, {0, 0});
+    CHECK(start.size.width == 1920 && start.bitrateFor.width == 1920);
+    start = chooseAutoStreamStart({}, 0, true, true, {0, 0});
+    CHECK(start.size.width == 0 && start.bitrateFor.width == 0);
 }
 
 namespace {
@@ -710,7 +838,7 @@ struct LibraryHost : FakeHost
 static void testALateKeyframeOfTheOldSizeNeverReachesTheNewDecoder()
 {
     LibraryHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
     videoPathStart();
 
     videoPathSendFrame(1, true, 1920, 1080);
@@ -760,7 +888,7 @@ static void testALateKeyframeOfTheOldSizeNeverReachesTheNewDecoder()
 static void testARollbackNeverShowsTheAttemptThatFailed()
 {
     LibraryHost host;
-    StreamResizeController controller(host, 1920, 1080, 60);
+    StreamResizeController controller(host, 1920, 1080, 60, true);
     videoPathStart();
 
     videoPathSendFrame(1, true, 1920, 1080);
@@ -806,9 +934,13 @@ int main()
     testARebuildThatNeverHappensEndsTheSession();
     testVideoThatDoesNotComeBackIsAskedForAgainThenEndsTheSession();
     testTheLoopWakingOftenDoesNotReplaceTheTimer();
-    testFullscreenIsNotFollowed();
+    testAChosenResolutionNeverAsksForAnything();
+    testFullscreenAsksForTheScreenOnce();
+    testBackInAWindowTheWindowIsFollowedAgain();
+    testAFullscreenRoundTripWithARequestInFlight();
     testAnAnswerThatArrivesInFullscreenIsStillApplied();
     testAnAutoStreamStartsAtItsWindowOrScreen();
+    testAnAutoStreamGoesByTheScreenItIsShownOn();
     testALateKeyframeOfTheOldSizeNeverReachesTheNewDecoder();
     testARollbackNeverShowsTheAttemptThatFailed();
 

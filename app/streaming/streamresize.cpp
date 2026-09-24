@@ -36,9 +36,24 @@ StreamSize chooseAutoStreamSize(bool fullScreen, StreamSize desktop, StreamSize 
     return {0, 0};
 }
 
-StreamResizeController::StreamResizeController(Host& host, int width, int height, int fps)
+AutoStreamStart chooseAutoStreamStart(const std::vector<DisplaySize>& displays, int target,
+                                      bool fullScreen, bool autoBitrate, StreamSize lastWindow)
+{
+    if (displays.empty()) {
+        return {chooseAutoStreamSize(fullScreen, {0, 0}, {0, 0}, lastWindow), {0, 0}};
+    }
+
+    const DisplaySize& display = target >= 0 && target < (int)displays.size() ? displays[target] : displays[0];
+    StreamSize bitrateFor = {0, 0};
+    if (autoBitrate && isKnown(display.desktop)) {
+        bitrateFor = display.desktop;
+    }
+    return {chooseAutoStreamSize(fullScreen, display.desktop, display.usable, lastWindow), bitrateFor};
+}
+
+StreamResizeController::StreamResizeController(Host& host, int width, int height, int fps, bool follow)
     : m_Host(host),
-      m_Enabled(true),
+      m_Enabled(follow),
       m_Ended(false),
       m_Windowed(true),
       m_Current({width, height}),
@@ -46,6 +61,7 @@ StreamResizeController::StreamResizeController(Host& host, int width, int height
       m_HasDesired(false),
       m_Desired({0, 0}),
       m_DesiredSinceMs(0),
+      m_DesiredSettles(true),
       m_Phase(Phase::Idle),
       m_PhaseSinceMs(0),
       m_LastIdrRequestMs(0),
@@ -68,13 +84,11 @@ void StreamResizeController::setWindowed(bool windowed, uint64_t)
         return;
     }
 
+    // A size the other mode wanted is not wanted any more. The size of this
+    // mode follows. A request already sent still gets its answer applied,
+    // since the host acts on it either way.
     m_Windowed = windowed;
-    if (!windowed) {
-        // A size the window had before going fullscreen is not wanted any
-        // more. A request already sent still gets its answer applied, since
-        // the host acts on it either way.
-        m_HasDesired = false;
-    }
+    m_HasDesired = false;
 }
 
 void StreamResizeController::onDrawableSize(int width, int height, uint64_t nowMs)
@@ -83,6 +97,22 @@ void StreamResizeController::onDrawableSize(int width, int height, uint64_t nowM
         return;
     }
 
+    setDesired(width, height, true, nowMs);
+}
+
+void StreamResizeController::onScreenSize(int width, int height, uint64_t nowMs)
+{
+    if (!m_Enabled || m_Windowed) {
+        return;
+    }
+
+    // The screen does not change size while it is dragged, so there is
+    // nothing to wait for
+    setDesired(width, height, false, nowMs);
+}
+
+void StreamResizeController::setDesired(int width, int height, bool settle, uint64_t nowMs)
+{
     // The host takes even sizes within its limits. A window smaller than the
     // smallest stream keeps the stream it has.
     Size size = {std::min(width, LI_STREAM_RESIZE_MAX_WIDTH) & ~1,
@@ -105,6 +135,7 @@ void StreamResizeController::onDrawableSize(int width, int height, uint64_t nowM
     m_HasDesired = true;
     m_Desired = size;
     m_DesiredSinceMs = nowMs;
+    m_DesiredSettles = settle;
     scheduleNext(nowMs);
 }
 
@@ -159,8 +190,8 @@ void StreamResizeController::onTick(uint64_t nowMs)
         break;
     }
 
-    if (!m_Enabled || !m_Windowed || !m_HasDesired) {
-        // A window again, or a new size, picks this up
+    if (!m_Enabled || !m_HasDesired) {
+        // A new size picks this up
         return;
     }
 
@@ -338,7 +369,7 @@ void StreamResizeController::end(const char* reason)
 
 void StreamResizeController::scheduleNext(uint64_t nowMs)
 {
-    if (!m_Enabled || !m_Windowed || !m_HasDesired || m_Phase != Phase::Idle) {
+    if (!m_Enabled || !m_HasDesired || m_Phase != Phase::Idle) {
         return;
     }
 
@@ -360,7 +391,7 @@ void StreamResizeController::scheduleAt(uint64_t atMs, uint64_t nowMs)
 
 uint64_t StreamResizeController::dueMs() const
 {
-    uint64_t due = m_DesiredSinceMs + k_SettleMs;
+    uint64_t due = m_DesiredSinceMs + (m_DesiredSettles ? k_SettleMs : 0);
     if (m_HasSent) {
         due = std::max(due, m_LastSentMs + k_MinIntervalMs);
     }
