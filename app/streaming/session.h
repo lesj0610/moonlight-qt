@@ -178,10 +178,13 @@ private:
 
     void processStreamResize();
 
+    void wakeForStreamResize();
+
     // StreamResizeController::Host
     int sendRequest(int width, int height, int fps, uint32_t* requestId) override;
-    void blockVideo() override;
-    void resumeVideoAtKeyframe() override;
+    void holdVideo() override;
+    void resumeVideo(bool fromFrame, uint32_t firstFrame) override;
+    bool isVideoFlowing() override;
     void requestIdrFrame() override;
     void applyStreamSize(int width, int height, int fps) override;
     void recreateDecoder() override;
@@ -242,7 +245,7 @@ private:
     void clSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlags, uint8_t typeLeft, uint8_t typeRight, uint8_t *left, uint8_t *right);
 
     static
-    void clStreamResizeResult(uint32_t requestId, uint16_t width, uint16_t height, uint16_t fps, uint8_t status);
+    void clStreamResizeResult(const STREAM_RESIZE_RESULT* result);
 
     static
     int arInit(int audioConfiguration,
@@ -300,23 +303,17 @@ private:
     StreamResizeController* m_ResizeController;
     SDL_TimerID m_ResizeTimer;
 
+    // What a resize asked of the main loop, which does it the next time it
+    // wakes. Only the main thread touches these.
+    bool m_ResizeRebuildWanted;
+    bool m_ResizeEndWanted;
+
     // Answers to resize requests, handed from the control stream thread to
     // the main thread. They are picked up whenever the main loop wakes, so
     // one whose wake-up event could not be queued is not lost.
-    struct StreamResizeResult
-    {
-        uint32_t requestId;
-        uint16_t width;
-        uint16_t height;
-        uint16_t fps;
-        uint8_t status;
-    };
     SDL_mutex* m_ResizeResultsLock;
-    std::deque<StreamResizeResult> m_ResizeResults;
+    std::deque<STREAM_RESIZE_RESULT> m_ResizeResults;
     SDL_atomic_t m_ResizeResultsPending;
-
-    // What reaches the decoder while the stream changes size
-    DecodeGate m_DecodeGate;
 
     OpusMSDecoder* m_OpusDecoder;
     IAudioRenderer* m_AudioRenderer;

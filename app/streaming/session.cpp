@@ -276,14 +276,14 @@ void Session::clSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g
     SDL_PushEvent(&setControllerLEDEvent);
 }
 
-void Session::clStreamResizeResult(uint32_t requestId, uint16_t width, uint16_t height, uint16_t fps, uint8_t status)
+void Session::clStreamResizeResult(const STREAM_RESIZE_RESULT* result)
 {
     // This runs on the control stream thread. The answer is handed over under
     // a lock and picked up whenever the main loop wakes, which it does at
     // least once a second, so it is not lost if the event below cannot be
     // queued. The event only wakes the loop sooner.
     SDL_LockMutex(s_ActiveSession->m_ResizeResultsLock);
-    s_ActiveSession->m_ResizeResults.push_back({requestId, width, height, fps, status});
+    s_ActiveSession->m_ResizeResults.push_back(*result);
     SDL_UnlockMutex(s_ActiveSession->m_ResizeResultsLock);
     SDL_AtomicSet(&s_ActiveSession->m_ResizeResultsPending, 1);
 
@@ -391,14 +391,29 @@ int Session::sendRequest(int width, int height, int fps, uint32_t* requestId)
     return LiRequestStreamResize(width, height, fps, requestId);
 }
 
-void Session::blockVideo()
+void Session::holdVideo()
 {
-    m_DecodeGate.block();
+    // Held back inside moonlight-common-c, where every decoder takes its
+    // frames from, whether they are pushed to it or it pulls them
+    LiHoldVideo();
 }
 
-void Session::resumeVideoAtKeyframe()
+void Session::resumeVideo(bool fromFrame, uint32_t firstFrame)
 {
-    m_DecodeGate.resumeAtKeyframe();
+    LiResumeVideo(fromFrame, firstFrame);
+}
+
+bool Session::isVideoFlowing()
+{
+    return LiIsVideoFlowing();
+}
+
+void Session::wakeForStreamResize()
+{
+    SDL_Event event = {};
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_STREAM_RESIZE_TICK;
+    SDL_PushEvent(&event);
 }
 
 void Session::stopFollowing(const char* reason)
@@ -413,12 +428,12 @@ void Session::endSession(const char* reason)
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", reason);
 
     m_UnexpectedTermination = true;
-    emit displayLaunchError(tr("The host did not answer a request to resize the stream, so the stream had to end."));
+    emit displayLaunchError(tr("The stream could not be resized to the window, so it had to end."));
 
-    SDL_Event event;
-    event.type = SDL_QUIT;
-    event.quit.timestamp = SDL_GetTicks();
-    SDL_PushEvent(&event);
+    // The main loop checks this every time it wakes, so the session ends even
+    // if the event cannot be queued. The event only wakes it sooner.
+    m_ResizeEndWanted = true;
+    wakeForStreamResize();
 }
 
 void Session::applyStreamSize(int width, int height, int fps)
@@ -438,9 +453,10 @@ void Session::applyStreamSize(int width, int height, int fps)
 
 void Session::recreateDecoder()
 {
-    SDL_Event event = {};
-    event.type = SDL_RENDER_DEVICE_RESET;
-    SDL_PushEvent(&event);
+    // Done by the main loop the next time it wakes, rather than by a reset
+    // event, which could fail to be queued or be flushed by another rebuild.
+    m_ResizeRebuildWanted = true;
+    wakeForStreamResize();
 }
 
 void Session::requestIdrFrame()
@@ -497,16 +513,15 @@ void Session::reportDrawableSize()
 void Session::processStreamResize()
 {
     if (SDL_AtomicGet(&m_ResizeResultsPending)) {
-        std::deque<StreamResizeResult> results;
+        std::deque<STREAM_RESIZE_RESULT> results;
         SDL_LockMutex(m_ResizeResultsLock);
         results.swap(m_ResizeResults);
         SDL_AtomicSet(&m_ResizeResultsPending, 0);
         SDL_UnlockMutex(m_ResizeResultsLock);
 
-        for (const StreamResizeResult& result : results) {
+        for (const STREAM_RESIZE_RESULT& result : results) {
             if (m_ResizeController != nullptr) {
-                m_ResizeController->onResult(result.requestId, result.width, result.height,
-                                             result.fps, result.status, streamResizeNow());
+                m_ResizeController->onResult(result, streamResizeNow());
             }
         }
     }
@@ -537,14 +552,6 @@ int Session::drSetup(int videoFormat, int width, int height, int frameRate, void
 
 int Session::drSubmitDecodeUnit(PDECODE_UNIT du)
 {
-    // Dropped while the stream changes size, up to the next keyframe once it
-    // is done. DR_OK rather than DR_NEED_IDR: the keyframe is asked for once
-    // the new decoder can take it, and asking for one for every dropped
-    // keyframe would make the host send nothing else.
-    if (!s_ActiveSession->m_DecodeGate.admit(du->frameType == FRAME_TYPE_IDR)) {
-        return DR_OK;
-    }
-
     // Use a lock since we'll be yanking this decoder out
     // from underneath the session when we initiate destruction.
     // We need to destroy the decoder on the main thread to satisfy
@@ -770,6 +777,8 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_StreamResizeSupported(false),
       m_ResizeController(nullptr),
       m_ResizeTimer(0),
+      m_ResizeRebuildWanted(false),
+      m_ResizeEndWanted(false),
       m_ResizeResultsLock(SDL_CreateMutex()),
       m_OpusDecoder(nullptr),
       m_AudioRenderer(nullptr),
@@ -2166,6 +2175,19 @@ void Session::exec()
     // because we want to suspend all Qt processing until the stream is over.
     SDL_Event event;
     for (;;) {
+        // What a stream resize needs from this loop is kept as state and done
+        // here, so an event that could not be queued loses nothing.
+        if (m_ResizeEndWanted) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Ending the stream after a failed resize");
+            goto DispatchDeferredCleanup;
+        }
+        if (m_ResizeRebuildWanted) {
+            SDL_zero(event);
+            event.type = SDL_RENDER_DEVICE_RESET;
+            goto HandleEvent;
+        }
+
 #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
         // SDL 2.0.18 has a proper wait event implementation that uses platform
         // support to block on events rather than polling on Windows, macOS, X11,
@@ -2201,6 +2223,7 @@ void Session::exec()
 #endif
         processStreamResize();
 
+HandleEvent:
         switch (event.type) {
         case SDL_QUIT:
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -2244,7 +2267,8 @@ void Session::exec()
                 break;
             case SDL_CODE_STREAM_RESIZE_RESULT:
             case SDL_CODE_STREAM_RESIZE_TICK:
-                // Only wake the loop. processStreamResize() did the work.
+                // Only wake the loop. processStreamResize() and the top of
+                // the loop did the work.
                 break;
             default:
                 SDL_assert(false);
@@ -2385,6 +2409,10 @@ void Session::exec()
                             event.type);
             }
 
+            // Any rebuild makes the decoder at the size the stream has now,
+            // which is all a resize waits for
+            m_ResizeRebuildWanted = false;
+
             SDL_LockMutex(m_DecoderLock);
 
             // Destroy the old decoder
@@ -2459,10 +2487,8 @@ void Session::exec()
 
             SDL_UnlockMutex(m_DecoderLock);
 
-            // A resize waiting on this rebuild lets frames through again. Only
-            // after the unlock: a frame arriving before it would be dropped as
-            // if accepted, and the next frames would reach the decoder
-            // without the keyframe they depend on.
+            // A resize waiting on this rebuild lets frames through again,
+            // once the new decoder is in place to take them.
             if (m_ResizeController != nullptr) {
                 m_ResizeController->onDecoderRecreated(streamResizeNow());
             }
