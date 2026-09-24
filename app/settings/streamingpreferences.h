@@ -14,6 +14,13 @@ public:
     Q_INVOKABLE static int
     getDefaultBitrate(int width, int height, int fps, bool yuv444);
 
+    // The bitrate to stream at when YUV 4:4:4 was asked for but the host
+    // cannot send it. A bitrate that follows the resolution and is the 4:4:4
+    // default becomes the 4:2:0 default, which looks the same. One set by hand
+    // is kept, even when it happens to equal the default.
+    static int
+    getBitrateWithoutYuv444(int bitrateKbps, bool autoAdjustBitrate, int width, int height, int fps);
+
     Q_INVOKABLE void save();
 
     // Remembers the window a stream that follows the window was last shown

@@ -1970,20 +1970,17 @@ bool Session::startConnectionAsync()
     // support YUV444 streaming, use the default non-444 bitrate for the stream instead.
     // This should provide equivalent image quality for YUV420 as the stream would have
     // had if the host supported YUV444 (though obviously with 4:2:0 subsampling).
-    // If the user has adjusted the bitrate from default, we'll assume they really wanted
-    // that value and not second guess them.
+    // A bitrate set by hand, in the settings or on the command line, is kept even when
+    // it happens to equal the default.
     int bitrateWidth = m_AutoBitrateFor.width > 0 ? m_AutoBitrateFor.width : m_StreamConfig.width;
     int bitrateHeight = m_AutoBitrateFor.width > 0 ? m_AutoBitrateFor.height : m_StreamConfig.height;
     if (m_Preferences->enableYUV444 &&
-        !(m_StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_YUV444) &&
-        m_StreamConfig.bitrate == StreamingPreferences::getDefaultBitrate(bitrateWidth,
-                                                                          bitrateHeight,
-                                                                          m_StreamConfig.fps,
-                                                                          true)) {
-        m_StreamConfig.bitrate = StreamingPreferences::getDefaultBitrate(bitrateWidth,
-                                                                         bitrateHeight,
-                                                                         m_StreamConfig.fps,
-                                                                         false);
+        !(m_StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_YUV444)) {
+        m_StreamConfig.bitrate = StreamingPreferences::getBitrateWithoutYuv444(m_StreamConfig.bitrate,
+                                                                               m_Preferences->autoAdjustBitrate,
+                                                                               bitrateWidth,
+                                                                               bitrateHeight,
+                                                                               m_StreamConfig.fps);
     }
 
     int err = LiStartConnection(&hostInfo, &m_StreamConfig, &k_ConnCallbacks,

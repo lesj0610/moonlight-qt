@@ -1,6 +1,6 @@
 // Tests that a resolution or bitrate given on the command line is what the
-// stream gets, whatever was saved, and that the saved preferences stay as
-// they are.
+// stream gets, whatever was saved, that the saved preferences stay as they
+// are, and that a bitrate set by hand is kept when YUV 4:4:4 is not there.
 
 #include "cli/commandlineparser.h"
 #include "settings/streamingpreferences.h"
@@ -95,6 +95,43 @@ static void testAChosenResolutionStaysChosen()
     CHECK(!QSettings().value("autoresolution").toBool());
 }
 
+static void testWithoutYuv444ABitrateThatFollowsTheResolutionFollows()
+{
+    int default444 = StreamingPreferences::getDefaultBitrate(1920, 1080, 60, true);
+    int default420 = StreamingPreferences::getDefaultBitrate(1920, 1080, 60, false);
+    CHECK(default444 != default420);
+
+    CHECK(StreamingPreferences::getBitrateWithoutYuv444(default444, true, 1920, 1080, 60) == default420);
+
+    // Not the default: someone chose it, as before
+    CHECK(StreamingPreferences::getBitrateWithoutYuv444(default444 + 1000, true, 1920, 1080, 60) == default444 + 1000);
+}
+
+static void testWithoutYuv444ABitrateSetByHandIsKept()
+{
+    int default444 = StreamingPreferences::getDefaultBitrate(1920, 1080, 60, true);
+
+    // Even when it is the very number the default would be
+    CHECK(StreamingPreferences::getBitrateWithoutYuv444(default444, false, 1920, 1080, 60) == default444);
+
+    // One given on the command line is set by hand too
+    saveAuto();
+    QSettings().setValue("yuv444", true);
+    StreamingPreferences* preferences = parseStream({"--1080", "--fps", "60", "--bitrate", QString::number(default444)});
+    CHECK(StreamingPreferences::getBitrateWithoutYuv444(preferences->bitrateKbps, preferences->autoAdjustBitrate,
+                                                        preferences->width, preferences->height, preferences->fps) == default444);
+
+    // Left out, it follows the resolution and drops to the 4:2:0 default
+    preferences = parseStream({"--1080", "--fps", "60"});
+    CHECK(preferences->enableYUV444);
+    CHECK(preferences->bitrateKbps == default444);
+    CHECK(StreamingPreferences::getBitrateWithoutYuv444(preferences->bitrateKbps, preferences->autoAdjustBitrate,
+                                                        preferences->width, preferences->height, preferences->fps) ==
+          StreamingPreferences::getDefaultBitrate(1920, 1080, 60, false));
+
+    QSettings().setValue("yuv444", false);
+}
+
 int main(int argc, char* argv[])
 {
     QCoreApplication app(argc, argv);
@@ -110,6 +147,8 @@ int main(int argc, char* argv[])
     testWithoutAResolutionTheSavedAutoStays();
     testABitrateGivenIsKept();
     testAChosenResolutionStaysChosen();
+    testWithoutYuv444ABitrateThatFollowsTheResolutionFollows();
+    testWithoutYuv444ABitrateSetByHandIsKept();
 
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);

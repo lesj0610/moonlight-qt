@@ -384,6 +384,15 @@ void StreamingPreferences::saveAutoWindowSize(int width, int height)
     settings.setValue(SER_AUTOWINDOWHEIGHT, autoWindowHeight);
 }
 
+int StreamingPreferences::getBitrateWithoutYuv444(int bitrateKbps, bool autoAdjustBitrate, int width, int height, int fps)
+{
+    if (autoAdjustBitrate && bitrateKbps == getDefaultBitrate(width, height, fps, true)) {
+        return getDefaultBitrate(width, height, fps, false);
+    }
+
+    return bitrateKbps;
+}
+
 int StreamingPreferences::getDefaultBitrate(int width, int height, int fps, bool yuv444)
 {
     // Don't scale bitrate linearly beyond 60 FPS. It's definitely not a linear
