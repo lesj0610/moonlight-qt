@@ -12,7 +12,14 @@
            Version="!(bind.fileVersion.MoonlightExe)"
            Manufacturer="Moonlight Game Streaming Project"
            UpgradeCode="5c09f94e-f809-4c6a-9b7b-597c99f041fe">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." Schedule="afterInstallInitialize" />
+    <!-- Builds of this fork keep the version of the upstream release they are
+        based on, so a newer build has to replace one of the same version too.
+        Otherwise the older build stays installed beside it, and files whose
+        version did not change, Moonlight.exe among them, are not replaced,
+        while the libraries that were renamed are. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed."
+                  Schedule="afterInstallInitialize"
+                  AllowSameVersionUpgrades="yes" />
     <MediaTemplate CompressionLevel="high" EmbedCab="yes" />
 
     <Property Id="APPDATAFOLDER" Value="%LOCALAPPDATA%\Moonlight Game Streaming Project" />
