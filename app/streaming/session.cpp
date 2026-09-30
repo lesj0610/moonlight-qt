@@ -151,6 +151,12 @@ void Session::clConnectionTerminated(int errorCode)
     default:
         s_ActiveSession->m_UnexpectedTermination = true;
 
+        if (s_ActiveSession->m_HostEndedForResize) {
+            // The host said why before it disconnected
+            emit s_ActiveSession->displayLaunchError(tr("The stream could not be resized to the window, so it had to end."));
+            break;
+        }
+
         // We'll assume large errors are hex values
         bool hexError = qAbs(errorCode) > 1000;
         emit s_ActiveSession->displayLaunchError(tr("Connection terminated") + "\n\n" +
@@ -434,6 +440,11 @@ void Session::endSession(const char* reason)
     // if the event cannot be queued. The event only wakes it sooner.
     m_ResizeEndWanted = true;
     wakeForStreamResize();
+}
+
+void Session::hostEndingSession()
+{
+    m_HostEndedForResize = true;
 }
 
 void Session::applyStreamSize(int width, int height, int fps)
@@ -830,6 +841,7 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_ResizeTimer(0),
       m_ResizeRebuildWanted(false),
       m_ResizeEndWanted(false),
+      m_HostEndedForResize(false),
       m_AutoWindowWidth(0),
       m_AutoWindowHeight(0),
       m_AutoBitrateFor({0, 0}),

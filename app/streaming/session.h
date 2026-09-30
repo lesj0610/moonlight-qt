@@ -14,6 +14,8 @@
 #include "video/overlaymanager.h"
 #include "streamresize.h"
 
+#include <atomic>
+
 class SupportedVideoFormatList : public QList<int>
 {
 public:
@@ -196,6 +198,7 @@ private:
     void scheduleTick(uint32_t delayMs) override;
     void stopFollowing(const char* reason) override;
     void endSession(const char* reason) override;
+    void hostEndingSession() override;
 
     enum class DecoderAvailability {
         None,
@@ -312,6 +315,10 @@ private:
     // wakes. Only the main thread touches these.
     bool m_ResizeRebuildWanted;
     bool m_ResizeEndWanted;
+
+    // Set when the host ends the session over a failed resize. Read by the
+    // termination callback, which runs on another thread.
+    std::atomic<bool> m_HostEndedForResize;
 
     // The window's size, in window units, while it is followed
     int m_AutoWindowWidth;

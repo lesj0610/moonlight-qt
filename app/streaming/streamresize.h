@@ -100,6 +100,9 @@ public:
 
         // The session cannot go on, and why
         virtual void endSession(const char* reason) = 0;
+
+        // The host is ending the session because a resize failed there
+        virtual void hostEndingSession() {}
     };
 
     // How long the window has to keep a size before it is asked for

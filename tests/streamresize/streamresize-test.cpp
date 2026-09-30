@@ -123,6 +123,11 @@ struct FakeHost : StreamResizeController::Host
         calls.push_back("end");
     }
 
+    void hostEndingSession() override
+    {
+        calls.push_back("host ending");
+    }
+
     int sends() const
     {
         return (int)requests.size();
@@ -386,8 +391,11 @@ static void testAHostThatCannotResizeIsNotAskedAgain()
         host.calls.clear();
         controller.onResult(answer(1, 1920, 1080, 60, status), 700);
 
-        // Video still comes back
+        // Video still comes back, and a host that is ending the session says so
         std::vector<std::string> expected = {"resume", "idr", "stop"};
+        if (status == LI_STREAM_RESIZE_FAILED_SESSION_ENDING) {
+            expected = {"resume", "idr", "host ending", "stop"};
+        }
         CHECK(host.calls == expected);
         CHECK(!controller.isEnabled());
 

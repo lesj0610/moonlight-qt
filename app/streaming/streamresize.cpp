@@ -294,6 +294,7 @@ void StreamResizeController::onResult(const STREAM_RESIZE_RESULT& result, uint64
         stop("the host cannot resize the stream in its current configuration");
     }
     else if (result.status == LI_STREAM_RESIZE_FAILED_SESSION_ENDING) {
+        m_Host.hostEndingSession();
         stop("a resize failed and the host is ending the session");
     }
 }

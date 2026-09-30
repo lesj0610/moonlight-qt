@@ -463,6 +463,10 @@
 <context>
     <name>Session</name>
     <message>
+        <source>The stream could not be resized to the window, so it had to end.</source>
+        <translation>스트림을 창 크기에 맞출 수 없어 연결을 종료했습니다.</translation>
+    </message>
+    <message>
         <location filename="../streaming/session.cpp" line="104"/>
         <source>No video received from host.</source>
         <translation>호스트로부터 받은 영상이 없습니다.</translation>
