@@ -1075,6 +1075,14 @@
         <translation>자동 (창 크기)</translation>
     </message>
     <message>
+        <source>Share the clipboard with the host</source>
+        <translation>호스트와 클립보드 공유</translation>
+    </message>
+    <message>
+        <source>Text and images copied on one side can be pasted on the other. What the host copied comes over when you leave the stream window, and what you copied goes to the host when you return to it. The host has to support this.</source>
+        <translation>한쪽에서 복사한 텍스트와 이미지를 다른 쪽에 붙여넣을 수 있습니다. 호스트에서 복사한 내용은 스트림 창을 벗어날 때 넘어오고, 여기서 복사한 내용은 스트림 창으로 돌아갈 때 호스트로 넘어갑니다. 호스트가 이 기능을 지원해야 합니다.</translation>
+    </message>
+    <message>
         <location filename="../gui/SettingsView.qml" line="643"/>
         <source>30 FPS</source>
         <translation>30 FPS</translation>

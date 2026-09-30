@@ -141,6 +141,16 @@ public:
                            int timeoutMs,
                            NvLogLevel logLevel = NvLogLevel::NVLL_VERBOSE);
 
+    // An HTTPS request whose answer is data rather than XML, such as the
+    // clipboard. A body makes it a POST. Nothing is thrown: the caller gets
+    // the finished reply to inspect and delete, or nullptr if it timed out.
+    QNetworkReply*
+    openHttpsDataConnection(QString command,
+                            QString arguments,
+                            const QByteArray* body,
+                            QString contentType,
+                            int timeoutMs);
+
     void setServerCert(QSslCertificate serverCert);
     void setAddress(NvAddress address);
     void setHttpsPort(uint16_t port);

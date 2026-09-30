@@ -1,4 +1,5 @@
 #include "session.h"
+#include "clipboardsync.h"
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
 #include "backend/richpresencemanager.h"
@@ -30,6 +31,7 @@
 #define SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS 105
 #define SDL_CODE_STREAM_RESIZE_RESULT 106
 #define SDL_CODE_STREAM_RESIZE_TICK 107
+#define SDL_CODE_CLIPBOARD_READY 108
 
 #include <openssl/rand.h>
 
@@ -842,6 +844,7 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_ResizeRebuildWanted(false),
       m_ResizeEndWanted(false),
       m_HostEndedForResize(false),
+      m_ClipboardSync(nullptr),
       m_AutoWindowWidth(0),
       m_AutoWindowHeight(0),
       m_AutoBitrateFor({0, 0}),
@@ -2260,6 +2263,15 @@ void Session::exec()
     // Start rich presence to indicate we're in game
     RichPresenceManager presence(*m_Preferences, m_App.name);
 
+    if (m_Preferences->clipboardSync && m_Computer->clipboardSupport) {
+        m_ClipboardSync = new ClipboardSync(m_Computer, []() {
+            SDL_Event event = {};
+            event.type = SDL_USEREVENT;
+            event.user.code = SDL_CODE_CLIPBOARD_READY;
+            SDL_PushEvent(&event);
+        });
+    }
+
     // Toggle the stats overlay if requested by the user
     m_OverlayManager.setOverlayState(Overlay::OverlayDebug, m_Preferences->showPerformanceOverlay);
 
@@ -2296,6 +2308,9 @@ void Session::exec()
         if (!SDL_WaitEventTimeout(&event, 1000)) {
             presence.runCallbacks();
             processStreamResize();
+            if (m_ClipboardSync) {
+                m_ClipboardSync->process();
+            }
             continue;
         }
 #else
@@ -2313,10 +2328,16 @@ void Session::exec()
 #endif
             presence.runCallbacks();
             processStreamResize();
+            if (m_ClipboardSync) {
+                m_ClipboardSync->process();
+            }
             continue;
         }
 #endif
         processStreamResize();
+        if (m_ClipboardSync) {
+            m_ClipboardSync->process();
+        }
 
 HandleEvent:
         switch (event.type) {
@@ -2365,6 +2386,9 @@ HandleEvent:
                 // Only wake the loop. processStreamResize() and the top of
                 // the loop did the work.
                 break;
+            case SDL_CODE_CLIPBOARD_READY:
+                // Only wake the loop, which has already applied what came back
+                break;
             default:
                 SDL_assert(false);
             }
@@ -2378,12 +2402,18 @@ HandleEvent:
                     m_AudioMuted = true;
                 }
                 m_InputHandler->notifyFocusLost();
+                if (m_ClipboardSync) {
+                    m_ClipboardSync->onFocusLost();
+                }
                 break;
             case SDL_WINDOWEVENT_FOCUS_GAINED:
                 if (m_Preferences->muteOnFocusLoss) {
                     m_AudioMuted = false;
                 }
                 m_InputHandler->notifyFocusGained();
+                if (m_ClipboardSync) {
+                    m_ClipboardSync->onFocusGained();
+                }
                 break;
             case SDL_WINDOWEVENT_SIZE_CHANGED:
                 // Before any flush below can drop it: the size is wanted even
@@ -2674,6 +2704,10 @@ DispatchDeferredCleanup:
     }
     delete m_ResizeController;
     m_ResizeController = nullptr;
+
+    // Nothing more is shared once the stream is over
+    delete m_ClipboardSync;
+    m_ClipboardSync = nullptr;
 
     // The window the stream followed is where the next one starts
     if (m_AutoWindowWidth > 0 && m_AutoWindowHeight > 0) {

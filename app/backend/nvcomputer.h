@@ -98,6 +98,9 @@ public:
     QVector<NvDisplayMode> displayModes;
     int maxLumaPixelsHEVC;
     int serverCodecModeSupport;
+
+    // The host shares its clipboard through /clipboard (a Sunshine fork extension)
+    bool clipboardSupport;
     QString gpuModel;
     bool isSupportedServerVersion;
 

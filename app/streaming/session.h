@@ -16,6 +16,8 @@
 
 #include <atomic>
 
+class ClipboardSync;
+
 class SupportedVideoFormatList : public QList<int>
 {
 public:
@@ -319,6 +321,9 @@ private:
     // Set when the host ends the session over a failed resize. Read by the
     // termination callback, which runs on another thread.
     std::atomic<bool> m_HostEndedForResize;
+
+    // Shares the clipboard with a host that offers it, when enabled
+    ClipboardSync* m_ClipboardSync;
 
     // The window's size, in window units, while it is followed
     int m_AutoWindowWidth;

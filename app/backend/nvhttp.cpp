@@ -479,6 +479,60 @@ NvHTTP::openConnectionToString(QUrl baseUrl,
 }
 
 QNetworkReply*
+NvHTTP::openHttpsDataConnection(QString command,
+                                QString arguments,
+                                const QByteArray* body,
+                                QString contentType,
+                                int timeoutMs)
+{
+    // Port must be set
+    Q_ASSERT(m_BaseUrlHttps.port(0) != 0);
+
+    QUrl url(m_BaseUrlHttps);
+    url.setPath("/" + command);
+    url.setQuery("uniqueid=" + (m_UseTrueUid ? IdentityManager::get()->getUniqueId() : "0123456789ABCDEF") +
+                 "&uuid=" + QUuid::createUuid().toRfc4122().toHex() +
+                 (arguments.isEmpty() ? "" : ("&" + arguments)));
+
+    QNetworkRequest request(url);
+    request.setSslConfiguration(IdentityManager::get()->getSslConfig());
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+#endif
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+    request.setAttribute(QNetworkRequest::ConnectionCacheExpiryTimeoutSecondsAttribute, 0);
+#endif
+    if (body != nullptr) {
+        request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
+    }
+
+    auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
+    QNetworkReply* reply = body != nullptr ? m_Nam->post(request, *body) : m_Nam->get(request);
+
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
+    if (timeoutMs) {
+        QTimer::singleShot(timeoutMs, &loop, &QEventLoop::quit);
+    }
+    loop.exec(QEventLoop::ExcludeUserInputEvents);
+
+#if QT_VERSION < QT_VERSION_CHECK(6, 3, 0)
+    m_Nam->clearAccessCache();
+#endif
+    disconnect(sslErrorsConnection);
+
+    if (!reply->isFinished()) {
+        qWarning() << "Aborting timed out" << command << "request";
+        reply->abort();
+        delete reply;
+        return nullptr;
+    }
+
+    return reply;
+}
+
+QNetworkReply*
 NvHTTP::openConnection(QUrl baseUrl,
                        QString command,
                        QString arguments,

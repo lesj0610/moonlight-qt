@@ -1399,6 +1399,23 @@ Flickable {
                                   qsTr("NOTE: Due to a bug in GeForce Experience, this option may not work properly if your host PC has multiple monitors.")
                 }
 
+                CheckBox {
+                    id: clipboardSyncCheck
+                    hoverEnabled: true
+                    width: parent.width
+                    text: qsTr("Share the clipboard with the host")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.clipboardSync
+                    onCheckedChanged: {
+                        StreamingPreferences.clipboardSync = checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 10000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Text and images copied on one side can be pasted on the other. What the host copied comes over when you leave the stream window, and what you copied goes to the host when you return to it. The host has to support this.")
+                }
+
                 Row {
                     spacing: 5
                     width: parent.width
