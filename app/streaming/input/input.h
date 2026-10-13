@@ -5,6 +5,20 @@
 
 #include "SDL_compat.h"
 
+#include <vector>
+
+// The host's mouse pointer, for drawing it here (see LiSetLocalCursor())
+struct HostCursor {
+    bool visible = true;
+    bool newImage = false; // The image and everything after it changed
+    std::vector<uint8_t> image; // BGRA with straight alpha
+    int width = 0;
+    int height = 0;
+    int hotX = 0;
+    int hotY = 0;
+    int scale = 1;
+};
+
 struct GamepadState {
     SDL_GameController* controller;
     SDL_JoystickID jsId;
@@ -155,6 +169,13 @@ public:
     // The stream changed size without reconnecting
     void setStreamSize(int width, int height);
 
+    // The host can leave drawing the mouse pointer to this client, and the
+    // preferences ask for it
+    void startLocalCursor();
+
+    // The host's pointer changed
+    void setHostCursor(const HostCursor& cursor);
+
     static
     QString getUnmappedGamepads();
 
@@ -229,6 +250,17 @@ private:
     QStringList m_IgnoreDeviceGuids;
     StreamingPreferences::CaptureSysKeysMode m_CaptureSystemKeysMode;
     int m_MouseCursorCapturedVisibilityState;
+
+    void setLocalCursorEnabled(bool enabled);
+    void updateLocalCursor();
+    void updateLocalCursorVisibility();
+
+    // Drawing the host's pointer here so it moves without waiting for video
+    bool m_LocalCursorAvailable;
+    bool m_LocalCursorEnabled;
+    HostCursor m_HostCursor;
+    SDL_Cursor* m_HostSdlCursor;
+    int m_HostCursorVideoWidth; // Video width m_HostSdlCursor was scaled for
 
     struct {
         KeyCombo keyCombo;

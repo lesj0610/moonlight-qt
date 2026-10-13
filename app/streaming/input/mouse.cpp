@@ -137,6 +137,11 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
         // Use the stream and window sizes to determine the video region
         StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
 
+        // Keep the host's pointer as large as the video around it
+        if (dst.w != m_HostCursorVideoWidth) {
+            updateLocalCursor();
+        }
+
         mouseInVideoRegion = isMouseInVideoRegion(x, y, windowWidth, windowHeight);
 
         // Clamp motion to the video region

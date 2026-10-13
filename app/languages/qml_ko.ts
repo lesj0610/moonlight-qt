@@ -1083,6 +1083,18 @@
         <translation>한쪽에서 복사한 텍스트와 이미지를 다른 쪽에 붙여넣을 수 있습니다. 호스트에서 복사한 내용은 스트림 창을 벗어날 때 넘어오고, 여기서 복사한 내용은 스트림 창으로 돌아갈 때 호스트로 넘어갑니다. 호스트가 이 기능을 지원해야 합니다.</translation>
     </message>
     <message>
+        <source>Draw the mouse pointer here so it moves without delay</source>
+        <translation>지연 없는 마우스 포인터 (이 PC에서 그리기)</translation>
+    </message>
+    <message>
+        <source>The pointer follows your mouse right away instead of waiting for the video, and changes shape as it does on the host. This works in remote desktop mouse mode, and the host has to support it.</source>
+        <translation>포인터가 영상을 기다리지 않고 마우스를 바로 따라가며, 모양은 호스트에서처럼 바뀝니다. 원격 데스크톱 마우스 모드에서 동작하며, 호스트가 이 기능을 지원해야 합니다.</translation>
+    </message>
+    <message>
+        <source>You can toggle this while streaming using Ctrl+Alt+Shift+C.</source>
+        <translation>스트리밍 중 Ctrl+Alt+Shift+C로 켜고 끌 수 있습니다.</translation>
+    </message>
+    <message>
         <location filename="../gui/SettingsView.qml" line="643"/>
         <source>30 FPS</source>
         <translation>30 FPS</translation>

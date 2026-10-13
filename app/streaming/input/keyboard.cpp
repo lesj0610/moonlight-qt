@@ -132,6 +132,11 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         // Toggle mouse mode
         m_AbsoluteMouseMode = !m_AbsoluteMouseMode;
 
+        // The host's pointer is only drawn here in remote desktop mouse mode
+        if (m_LocalCursorAvailable) {
+            setLocalCursorEnabled(m_AbsoluteMouseMode);
+        }
+
         // Recapture input
         setCaptureActive(true);
         break;
@@ -140,7 +145,11 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Detected show mouse combo");
 
-        if (!SDL_GetRelativeMouseMode()) {
+        if (m_LocalCursorAvailable && m_AbsoluteMouseMode) {
+            // Switch between drawing the host's pointer here and seeing it in the video
+            setLocalCursorEnabled(!m_LocalCursorEnabled);
+        }
+        else if (!SDL_GetRelativeMouseMode()) {
             m_MouseCursorCapturedVisibilityState = !m_MouseCursorCapturedVisibilityState;
             SDL_ShowCursor(m_MouseCursorCapturedVisibilityState);
         }

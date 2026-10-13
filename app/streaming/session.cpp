@@ -32,6 +32,7 @@
 #define SDL_CODE_STREAM_RESIZE_RESULT 106
 #define SDL_CODE_STREAM_RESIZE_TICK 107
 #define SDL_CODE_CLIPBOARD_READY 108
+#define SDL_CODE_LOCAL_CURSOR_UPDATE 109
 
 #include <openssl/rand.h>
 
@@ -65,7 +66,8 @@ CONNECTION_LISTENER_CALLBACKS Session::k_ConnCallbacks = {
     Session::clSetMotionEventState,
     Session::clSetControllerLED,
     Session::clSetAdaptiveTriggers,
-    Session::clStreamResizeResult
+    Session::clStreamResizeResult,
+    Session::clLocalCursorUpdate
 };
 
 namespace {
@@ -303,6 +305,30 @@ void Session::clStreamResizeResult(const STREAM_RESIZE_RESULT* result)
                     "Couldn't wake the main thread for a stream resize answer: %s",
                     SDL_GetError());
     }
+}
+
+void Session::clLocalCursorUpdate(const LOCAL_CURSOR_UPDATE* update)
+{
+    // This runs on the control stream thread
+    SDL_LockMutex(s_ActiveSession->m_HostCursorLock);
+    HostCursor& cursor = s_ActiveSession->m_HostCursor;
+    cursor.visible = update->visible;
+    if (update->image != nullptr) {
+        cursor.newImage = true;
+        cursor.image.assign(update->image, update->image + (size_t)update->width * update->height * 4);
+        cursor.width = update->width;
+        cursor.height = update->height;
+        cursor.hotX = update->hotX;
+        cursor.hotY = update->hotY;
+        cursor.scale = update->scale;
+    }
+    s_ActiveSession->m_HostCursorPending = true;
+    SDL_UnlockMutex(s_ActiveSession->m_HostCursorLock);
+
+    SDL_Event event = {};
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_LOCAL_CURSOR_UPDATE;
+    SDL_PushEvent(&event);
 }
 
 void Session::clSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlags, uint8_t typeLeft, uint8_t typeRight, uint8_t *left, uint8_t *right){
@@ -849,6 +875,8 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_AutoWindowHeight(0),
       m_AutoBitrateFor({0, 0}),
       m_ResizeResultsLock(SDL_CreateMutex()),
+      m_HostCursorLock(SDL_CreateMutex()),
+      m_HostCursorPending(false),
       m_OpusDecoder(nullptr),
       m_AudioRenderer(nullptr),
       m_AudioSampleCount(0),
@@ -864,6 +892,7 @@ Session::~Session()
 
     SDL_DestroyMutex(m_DecoderLock);
     SDL_DestroyMutex(m_ResizeResultsLock);
+    SDL_DestroyMutex(m_HostCursorLock);
 }
 
 bool Session::initialize(QQuickWindow* qtWindow)
@@ -2255,6 +2284,11 @@ void Session::exec()
                 "yes, and the screen size in fullscreen");
     reportDrawableSize();
 
+    // Draw the host's mouse pointer here, so it moves without waiting for video
+    if (m_Preferences->localCursor && (LiGetHostFeatureFlags() & LI_FF_LOCAL_CURSOR)) {
+        m_InputHandler->startLocalCursor();
+    }
+
     // Now that we're about to stream, any SDL_QUIT event is expected
     // unless it comes from the connection termination callback where
     // (m_UnexpectedTermination is set back to true).
@@ -2389,6 +2423,25 @@ HandleEvent:
             case SDL_CODE_CLIPBOARD_READY:
                 // Only wake the loop, which has already applied what came back
                 break;
+            case SDL_CODE_LOCAL_CURSOR_UPDATE: {
+                HostCursor cursor;
+                bool pending;
+
+                SDL_LockMutex(m_HostCursorLock);
+                pending = m_HostCursorPending;
+                if (pending) {
+                    cursor = std::move(m_HostCursor);
+                    m_HostCursor = HostCursor();
+                    m_HostCursorPending = false;
+                }
+                SDL_UnlockMutex(m_HostCursorLock);
+
+                // Updates that merged woke the loop more than once
+                if (pending) {
+                    m_InputHandler->setHostCursor(cursor);
+                }
+                break;
+            }
             default:
                 SDL_assert(false);
             }

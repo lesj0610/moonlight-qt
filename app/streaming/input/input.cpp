@@ -1,12 +1,15 @@
 #include <Limelight.h>
 #include "SDL_compat.h"
 #include "streaming/session.h"
+#include "streaming/streamutils.h"
 #include "settings/mappingmanager.h"
 #include "path.h"
 #include "utils.h"
 
 #include <QtGlobal>
 #include <QDir>
+
+#include <cmath>
 #include <QGuiApplication>
 
 SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, int streamHeight)
@@ -23,6 +26,10 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_KeyboardCaptureActive(false),
       m_CaptureSystemKeysMode(prefs.captureSysKeysMode),
       m_MouseCursorCapturedVisibilityState(SDL_DISABLE),
+      m_LocalCursorAvailable(false),
+      m_LocalCursorEnabled(false),
+      m_HostSdlCursor(nullptr),
+      m_HostCursorVideoWidth(0),
       m_LongPressTimer(0),
       m_StreamWidth(streamWidth),
       m_StreamHeight(streamHeight),
@@ -241,6 +248,11 @@ SdlInputHandler::~SdlInputHandler()
         }
     }
 
+    if (m_HostSdlCursor != nullptr) {
+        SDL_SetCursor(SDL_GetDefaultCursor());
+        SDL_FreeCursor(m_HostSdlCursor);
+    }
+
     SDL_RemoveTimer(m_LongPressTimer);
     SDL_RemoveTimer(m_LeftButtonReleaseTimer);
     SDL_RemoveTimer(m_RightButtonReleaseTimer);
@@ -285,6 +297,130 @@ void SdlInputHandler::setStreamSize(int width, int height)
     m_StreamWidth = width;
     m_StreamHeight = height;
     updatePointerRegionLock();
+    updateLocalCursor();
+}
+
+void SdlInputHandler::startLocalCursor()
+{
+    m_LocalCursorAvailable = true;
+
+    // The pointer is only drawn here while it follows the mouse as it is
+    if (m_AbsoluteMouseMode) {
+        setLocalCursorEnabled(true);
+    }
+}
+
+void SdlInputHandler::setLocalCursorEnabled(bool enabled)
+{
+    if (LiSetLocalCursor(enabled) != 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Couldn't ask the host to %s drawing the mouse pointer",
+                    enabled ? "stop" : "resume");
+        return;
+    }
+
+    m_LocalCursorEnabled = enabled;
+    if (!enabled) {
+        // The host draws the pointer into the video again, and sends it anew
+        // if it is enabled again
+        m_HostCursor = HostCursor();
+        if (m_HostSdlCursor != nullptr) {
+            SDL_SetCursor(SDL_GetDefaultCursor());
+            SDL_FreeCursor(m_HostSdlCursor);
+            m_HostSdlCursor = nullptr;
+        }
+    }
+
+    updateLocalCursorVisibility();
+}
+
+void SdlInputHandler::setHostCursor(const HostCursor& cursor)
+{
+    // An update that crossed a request to stop is of no use
+    if (!m_LocalCursorEnabled) {
+        return;
+    }
+
+    m_HostCursor.visible = cursor.visible;
+    if (cursor.newImage) {
+        m_HostCursor = cursor;
+        m_HostCursorVideoWidth = 0;
+        updateLocalCursor();
+    }
+
+    updateLocalCursorVisibility();
+}
+
+void SdlInputHandler::updateLocalCursor()
+{
+    if (!m_LocalCursorEnabled || m_HostCursor.image.empty()) {
+        return;
+    }
+
+    int windowWidth, windowHeight;
+    SDL_GetWindowSize(m_Window, &windowWidth, &windowHeight);
+
+    SDL_Rect src = { 0, 0, m_StreamWidth, m_StreamHeight };
+    SDL_Rect dst = { 0, 0, windowWidth, windowHeight };
+    StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
+    if (dst.w == m_HostCursorVideoWidth) {
+        return;
+    }
+
+    // Tried once for each size, even if it fails
+    m_HostCursorVideoWidth = dst.w;
+
+    // As large as the host would draw it into video scaled to the window
+    float scale = m_HostCursor.scale * (float)dst.w / m_StreamWidth;
+    int width = qMax(1, (int)lroundf(m_HostCursor.width * scale));
+    int height = qMax(1, (int)lroundf(m_HostCursor.height * scale));
+
+    SDL_Surface* image = SDL_CreateRGBSurfaceWithFormatFrom(m_HostCursor.image.data(),
+                                                            m_HostCursor.width, m_HostCursor.height,
+                                                            32, m_HostCursor.width * 4,
+                                                            SDL_PIXELFORMAT_ARGB8888);
+    SDL_Surface* surface = image;
+    if (image != nullptr && (width != m_HostCursor.width || height != m_HostCursor.height)) {
+        surface = SDL_CreateRGBSurfaceWithFormat(0, width, height, 32, SDL_PIXELFORMAT_ARGB8888);
+        if (surface != nullptr) {
+            SDL_SetSurfaceBlendMode(image, SDL_BLENDMODE_NONE);
+            SDL_BlitScaled(image, nullptr, surface, nullptr);
+        }
+    }
+
+    SDL_Cursor* cursor = nullptr;
+    if (surface != nullptr) {
+        cursor = SDL_CreateColorCursor(surface,
+                                       qMin((int)lroundf(m_HostCursor.hotX * scale), width - 1),
+                                       qMin((int)lroundf(m_HostCursor.hotY * scale), height - 1));
+    }
+    if (surface != image) {
+        SDL_FreeSurface(surface);
+    }
+    SDL_FreeSurface(image);
+
+    if (cursor == nullptr) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Couldn't create the host's mouse pointer: %s",
+                    SDL_GetError());
+        return;
+    }
+
+    SDL_SetCursor(cursor);
+    if (m_HostSdlCursor != nullptr) {
+        SDL_FreeCursor(m_HostSdlCursor);
+    }
+    m_HostSdlCursor = cursor;
+}
+
+void SdlInputHandler::updateLocalCursorVisibility()
+{
+    // In remote desktop mouse mode the pointer is hidden over the video,
+    // unless it is drawn here and the host shows it
+    m_MouseCursorCapturedVisibilityState = (m_LocalCursorEnabled && m_HostCursor.visible) ? SDL_ENABLE : SDL_DISABLE;
+    if (isCaptureActive() && !SDL_GetRelativeMouseMode()) {
+        SDL_ShowCursor(m_MouseCursorCapturedVisibilityState);
+    }
 }
 
 void SdlInputHandler::notifyFocusLost()

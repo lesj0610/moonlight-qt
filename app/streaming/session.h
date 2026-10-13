@@ -258,6 +258,9 @@ private:
     void clStreamResizeResult(const STREAM_RESIZE_RESULT* result);
 
     static
+    void clLocalCursorUpdate(const LOCAL_CURSOR_UPDATE* update);
+
+    static
     int arInit(int audioConfiguration,
                const POPUS_MULTISTREAM_CONFIGURATION opusConfig,
                void* arContext, int arFlags);
@@ -339,6 +342,12 @@ private:
     SDL_mutex* m_ResizeResultsLock;
     std::deque<STREAM_RESIZE_RESULT> m_ResizeResults;
     SDL_atomic_t m_ResizeResultsPending;
+
+    // The host's mouse pointer, handed from the control stream thread to the
+    // main thread. Only the latest matters, so updates that pile up merge.
+    SDL_mutex* m_HostCursorLock;
+    HostCursor m_HostCursor;
+    bool m_HostCursorPending;
 
     OpusMSDecoder* m_OpusDecoder;
     IAudioRenderer* m_AudioRenderer;

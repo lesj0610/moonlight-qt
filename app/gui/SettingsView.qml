@@ -1400,6 +1400,24 @@ Flickable {
                 }
 
                 CheckBox {
+                    id: localCursorCheck
+                    hoverEnabled: true
+                    width: parent.width
+                    text: qsTr("Draw the mouse pointer here so it moves without delay")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.localCursor
+                    onCheckedChanged: {
+                        StreamingPreferences.localCursor = checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 10000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("The pointer follows your mouse right away instead of waiting for the video, and changes shape as it does on the host. This works in remote desktop mouse mode, and the host has to support it.") + " " +
+                                  qsTr("You can toggle this while streaming using Ctrl+Alt+Shift+C.")
+                }
+
+                CheckBox {
                     id: clipboardSyncCheck
                     hoverEnabled: true
                     width: parent.width
